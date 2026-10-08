@@ -42,7 +42,7 @@ class Generated(unittest.TestCase):
         self.assertEqual(root.find("clock").get("offset"), "utc")
         self.assertEqual(root.find("pm/suspend-to-mem").get("enabled"), "no")
         self.assertEqual(root.find("pm/suspend-to-disk").get("enabled"), "no")
-        self.assertEqual(root.find("devices/disk/target").get("bus"), "nvme")
+        self.assertEqual(root.find("devices/disk/target").get("bus"), "sata")
         self.assertEqual(root.find("devices/disk/source").get("dev"), "/dev/mapper/winvm-rw")
         self.assertEqual(root.find("devices/interface/model").get("type"), "e1000e")
         self.assertEqual(root.find("devices/graphics/listen").get("type"), "socket")
@@ -150,10 +150,15 @@ class Audit(unittest.TestCase):
             r.find("devices/disk/blockio").set("logical_block_size", "4096")
         self.refused(RW, f, "512")
 
-    def test_sata_bus(self):
+    def test_nvme_bus(self):  # T29: QEMU NVMe -> INACCESSIBLE_BOOT_DEVICE (measured in P2)
         def f(r):
-            r.find("devices/disk/target").set("bus", "sata")
-        self.refused(RW, f, "NVMe")
+            r.find("devices/disk/target").set("bus", "nvme")
+        self.refused(RW, f, "SATA")
+
+    def test_virtio_bus(self):  # no inbox virtio driver in Windows
+        def f(r):
+            r.find("devices/disk/target").set("bus", "virtio")
+        self.refused(RW, f, "SATA")
 
     def test_hostdev(self):
         self.refused(RW, lambda r: ET.SubElement(r.find("devices"), "hostdev", mode="subsystem", type="usb"),
@@ -177,6 +182,17 @@ class Audit(unittest.TestCase):
             g.set("type", "vnc")
             g.find("listen").attrib = {"type": "address", "address": "0.0.0.0"}
         self.refused(RW, f, "local socket")
+
+    def test_no_panic_device(self):  # T30
+        def f(r):
+            d = r.find("devices")
+            d.remove(d.find("panic"))
+        self.refused(RW, f, "panic")
+
+    def test_crash_reboots(self):  # T30
+        def f(r):
+            r.find("on_crash").text = "restart"
+        self.refused(RW, f, "on_crash")
 
     def test_marker_missing_on_persistent(self):  # T8
         def f(r):

@@ -46,7 +46,8 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
         <source dev='{dm}'/>
         <backingStore/>
       </backingStore>
-      <target dev='nvme0n1' bus='nvme'/>
+      <target dev='sda' bus='sata'/>
+      <serial>{config.DISK_SERIAL}</serial>
       <blockio logical_block_size='512' physical_block_size='512'/>
     </disk>"""
     else:
@@ -54,7 +55,8 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
     <disk type='block' device='disk'>
       <driver name='qemu' type='raw' cache='none' io='native' discard='ignore'/>
       <source dev='{dm}'/>
-      <target dev='nvme0n1' bus='nvme'/>
+      <target dev='sda' bus='sata'/>
+      <serial>{config.DISK_SERIAL}</serial>
       <blockio logical_block_size='512' physical_block_size='512'/>
     </disk>"""
     sysinfo = ""
@@ -112,9 +114,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
   </pm>
   <devices>
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
-    <controller type='nvme' index='0'>
-      <serial>{config.NVME_SERIAL}</serial>
-    </controller>{disk}
+    <controller type='sata' index='0'/>{disk}
     <controller type='usb' index='0' model='qemu-xhci' ports='15'/>
     <controller type='pci' index='0' model='pcie-root'/>
     <interface type='network'>
@@ -133,6 +133,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
       <model type='vga' vram='65536' heads='1' primary='yes'/>
     </video>
     <memballoon model='none'/>
+    <panic model='hyperv'/>
   </devices>
 </domain>
 """
@@ -222,8 +223,10 @@ def audit(xml_text: str, domain: str) -> list[str]:
         if d.get("device") != "disk":
             p.append(f"a {d.get('device')} device is attached (no CD-ROMs/floppies: install media comes over SMB)")
         tgt = d.find("target")
-        if tgt is None or tgt.get("bus") != "nvme":
-            p.append("the disk must be on the NVMe bus (Windows boots it with the inbox stornvme driver)")
+        if tgt is None or tgt.get("bus") != "sata":
+            p.append("the disk must be on the SATA bus: Windows boots it with the inbox storahci driver (boot-start, "
+                     "used by the hardware too). QEMU's NVMe ends in INACCESSIBLE_BOOT_DEVICE (T29), virtio has no "
+                     "inbox driver")
         bio = d.find("blockio")
         if bio is None or bio.get("logical_block_size") != "512":
             p.append("disk logical block size must be 512 (T17)")
@@ -246,6 +249,12 @@ def audit(xml_text: str, domain: str) -> list[str]:
     for tag in ("hostdev", "filesystem", "redirdev", "smartcard"):
         if dev.find(tag) is not None:
             p.append(f"<{tag}> attached - nothing of the host may be passed through")
+    # T30: a blue screen stops the VM (with its code + parameters in libvirt's log) instead of rebooting into
+    # Windows' Automatic Repair, which would "repair" the REAL C:
+    if not any(pn.get("model") == "hyperv" for pn in dev.findall("panic")):
+        p.append("no <panic model='hyperv'/> device (T30: crashes must be caught, logged and stop the VM)")
+    if root.findtext("on_crash") != "destroy":
+        p.append("on_crash must be destroy (T30: never reboot a crashed VM into Automatic Repair)")
     # T26/D5: the network, fixed MAC
     ifs = dev.findall("interface")
     if len(ifs) != 1:

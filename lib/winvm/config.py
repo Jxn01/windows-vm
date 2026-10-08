@@ -49,7 +49,7 @@ GUEST_IP = "192.168.122.10"
 HOST_IP = "192.168.122.1"
 NETWORK = "default"
 BRIDGE = "virbr0"
-NVME_SERIAL = "JXNWINVM0001"
+DISK_SERIAL = "JXNWINVM0001"  # the VM disk's serial (SATA, see xmlgen: trap T29)
 # SMBIOS marker the VM-mode guard looks for (trap T8). The hardware never reports these.
 SMBIOS_MANUFACTURER = "jxn"
 SMBIOS_PRODUCT = "windows-vm"

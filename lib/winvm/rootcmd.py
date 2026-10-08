@@ -11,6 +11,11 @@
     winvm-root define [--test-no-marker]      audit + (re)define the network and both domains, keeping their
                                               UUIDs; --test-no-marker defines windows-test WITHOUT the SMBIOS
                                               marker (only for the guard's restore test, P3)
+    winvm-root inspect start|stop|cat P|ls P  read the throwaway overlay's C: from Garuda (both VMs off): the
+                                              read-only disk is assembled, the overlay attached with qemu-nbd
+                                              (no partition scan) and C:'s region exposed as a read-only loop
+                                              device for ntfs-3g's offline readers. For logs a failed test boot
+                                              left behind (SrtTrail.txt, event logs, the guard's log).
     winvm-root destroy-test                   destroy windows-test if it runs (windows-vm-test-guard.service,
                                               at Garuda's shutdown - never called from the hook)
 
@@ -125,9 +130,35 @@ def hook(argv: list[str], xml_text: str) -> int:
     return 0
 
 
+EXPERIMENT_FILE = Path("/run/windows-vm/experiment")
+UNWAIVABLE = ("disk", "source", "TPM", "Secure Boot", "backing", "firmware", "nvram", "NAT", "MAC", "display",
+              "marker", "hostdev", "filesystem", "redirdev", "smartcard")
+
+
+def waived(domain: str, problems: list[str]) -> tuple[list[str], list[str]]:
+    """Diagnosis-only waiver for the THROWAWAY domain (its disk is read-only by construction): lines in the
+    root-only, tmpfs file /run/windows-vm/experiment name audit rules to skip (substring match), e.g. `svm`.
+    Never for the persistent domain, never for a disk/firmware/network/display rule, cleared by any reboot."""
+    if domain != config.TEST_DOMAIN or not EXPERIMENT_FILE.exists():
+        return problems, []
+    st = EXPERIMENT_FILE.stat()
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        return problems, []
+    keys = [k.strip() for k in EXPERIMENT_FILE.read_text().splitlines() if k.strip()]
+    keep, skip = [], []
+    for pr in problems:
+        if any(k in pr for k in keys) and not any(u in pr for u in UNWAIVABLE):
+            skip.append(pr)
+        else:
+            keep.append(pr)
+    return keep, skip
+
+
 def _prepare(domain: str, xml_text: str) -> int:
     say = lambda m: log(f"[{domain}] {m}")  # noqa: E731
-    problems = xmlgen.audit(xml_text, domain)
+    problems, skipped = waived(domain, xmlgen.audit(xml_text, domain))
+    for pr in skipped:
+        say(f"EXPERIMENT: audit rule waived for the throwaway domain: {pr}")
     if problems:
         say("REFUSED: the domain XML breaks the safety rules: " + "; ".join(problems))
         return 1
@@ -187,6 +218,80 @@ def esp_manifest(label: str) -> int:
     for line in sorted(b - a):
         print(f"  + {line}")
     return 1
+
+
+INSPECT_STATE = dm.RUN_DIR / "inspect.json"
+
+
+def inspect(rest: list[str]) -> int:
+    sub = rest[0] if rest else "status"
+    lay = load_layout()
+    if sub == "start":
+        if INSPECT_STATE.exists():
+            print("already started: " + INSPECT_STATE.read_text())
+            return 0
+        for d in config.DOMAINS:
+            st = _virsh("domstate", d).stdout.strip()
+            if st not in ("shut off", ""):
+                print(f"{d} is {st} - inspection needs both VMs off")
+                return 1
+        if not config.OVERLAY.exists():
+            print("no overlay to inspect")
+            return 1
+        checks = preflight.run(RealProbe(), lay)
+        bad = preflight.refusals(checks)
+        if bad:
+            print(preflight.report(bad))
+            return 1
+        # nbd with max_part=0: the kernel never scans the overlay's partition table, so udev never creates
+        # /dev/disk/by-partuuid links carrying the REAL partitions' GUIDs for it.
+        mp = Path("/sys/module/nbd/parameters/max_part")
+        if mp.exists() and mp.read_text().strip() != "0":
+            print("the nbd module is loaded with max_part != 0 - refusing (partition scan would duplicate PARTUUIDs)")
+            return 1
+        subprocess.run(["modprobe", "nbd", "max_part=0", "nbds_max=4"], check=True)
+        dm.build(config.TEST_DOMAIN, lay, smb_password(), log=lambda m: print(m))
+        nbd = next(f"/dev/nbd{i}" for i in range(4) if Path(f"/sys/block/nbd{i}/pid").exists() is False)
+        subprocess.run(["qemu-nbd", "--read-only", "--fork", "-f", "qcow2", "-c", nbd, str(config.OVERLAY)], check=True)
+        subprocess.run(["udevadm", "settle"])
+        c = lay.part(lay.windows_partition)
+        bs = lay.logical_block_size
+        want = lay.total_sectors * bs
+        for _ in range(100):  # qemu-nbd --fork returns before the kernel knows the device's size
+            if int(Path(f"/sys/block/{Path(nbd).name}/size").read_text()) * 512 == want:
+                break
+            time.sleep(0.1)
+        else:
+            print(f"{nbd} never reached the disk's size")
+            return 1
+        loop = subprocess.run(["losetup", "--find", "--show", "--read-only", "--offset", str(c.first_lba * bs),
+                               "--sizelimit", str(c.sectors * bs), nbd], check=True, capture_output=True,
+                              text=True).stdout.strip()
+        INSPECT_STATE.write_text(json.dumps({"nbd": nbd, "loop": loop}))
+        got = int(subprocess.run(["blockdev", "--getsize64", loop], capture_output=True, text=True).stdout)
+        if got != c.sectors * bs:
+            print(f"{loop} has {got} bytes, expected {c.sectors * bs}")
+            return 1
+        print(f"overlay C: is readable at {loop} (read-only); `winvm-root inspect stop` when done")
+        return 0
+    if sub == "stop":
+        if INSPECT_STATE.exists():
+            st = json.loads(INSPECT_STATE.read_text())
+            subprocess.run(["losetup", "--detach", st["loop"]], capture_output=True)
+            subprocess.run(["qemu-nbd", "-d", st["nbd"]], capture_output=True)
+            INSPECT_STATE.unlink()
+        dm.teardown(config.TEST_DOMAIN, log=lambda m: print(m))
+        print("inspection stopped")
+        return 0
+    if sub in ("cat", "ls") and len(rest) > 1:
+        if not INSPECT_STATE.exists():
+            print("run `winvm-root inspect start` first")
+            return 1
+        loop = json.loads(INSPECT_STATE.read_text())["loop"]
+        tool = ["ntfscat", loop, rest[1]] if sub == "cat" else ["ntfsls", "-l", "-p", rest[1], loop]
+        return subprocess.run(tool).returncode
+    print("usage: winvm-root inspect start|stop|cat PATH|ls PATH")
+    return 2
 
 
 def _virsh(*args: str) -> subprocess.CompletedProcess:
@@ -288,6 +393,8 @@ def main(argv: list[str]) -> int:
     if cmd == "teardown":
         dm.teardown(rest[0])
         return 0
+    if cmd == "inspect":
+        return inspect(rest)
     if cmd == "define":
         return define(test_marker="--test-no-marker" not in rest)
     if cmd == "destroy-test":
