@@ -1,0 +1,16 @@
+# Installed by ~/Projects/windows-vm. At Garuda's shutdown, DESTROY the throwaway test VM (windows-test) before
+# libvirt-guests shuts guests down cleanly: an overlay without the VM-mode guard must never shut down cleanly,
+# because Windows' lights-off tasks fire on the shutdown event and would switch the real bulbs off.
+# After=libvirt-guests.service => this unit's ExecStop runs BEFORE libvirt-guests' stop.
+[Unit]
+Description=windows-vm: destroy the throwaway Windows test VM before guests are shut down
+After=libvirt-guests.service libvirtd.service virtqemud.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/lib/windows-vm/winvm-root destroy-test
+
+[Install]
+WantedBy=multi-user.target

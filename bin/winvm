@@ -1,0 +1,11 @@
+#!/usr/bin/python3 -I
+"""winvm - run the real Windows (C:) as a VM on Garuda. See README.md / `winvm --help`."""
+import sys
+from pathlib import Path
+
+# Run from the repo checkout when invoked there (development), else from the installed copy.
+_repo = Path(__file__).resolve().parent.parent / "lib"
+sys.path.insert(0, str(_repo) if (_repo / "winvm" / "cli.py").exists() else "/usr/local/lib/windows-vm")
+from winvm.cli import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

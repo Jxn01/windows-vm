@@ -1,0 +1,92 @@
+# The real system disk exactly as recorded in P0 of the Windows-VM plan (2026-10-09, read live).
+#
+# winvm compares the LIVE partition table against this file before every VM start and refuses on ANY
+# difference (plan trap: GPT drift). If the disk is repartitioned on purpose, re-record it with
+# `sudo winvm-root layout record > etc/layout.toml`, review the diff, commit, and reinstall.
+#
+# Roles:
+#   esp     -> the VM gets a PRIVATE copy at the same LBA/size (never the real ESP; trap T5)
+#   mapped  -> the VM's sector N is the real partition's sector N (dm linear, identity offsets; T6)
+#   absent  -> the entry is blanked in the VM's table and its sectors read as zeros (dm zero; T1)
+# windows_side = true: a Windows partition; the pre-flight refuses while it is mounted, swap or claimed
+#   (Garuda's own root and the shared ESP are false - they are mounted by design and never mapped).
+# Every partition on the disk must be listed; an unlisted one is drift.
+
+[disk]
+by_id = "/dev/disk/by-id/nvme-KINGSTON_SFYR2S4T0_50026B7283A6141C"
+logical_block_size = 512
+physical_block_size = 512
+total_sectors = 8001573552
+disk_guid = "0897a6e9-ad1d-41ce-a152-026976da8cae"
+first_usable_lba = 2048
+last_usable_lba = 8001573518
+num_entries = 128
+entry_size = 128
+# The partition holding Windows itself (C:); the pre-flight reads its NTFS state.
+windows_partition = 5
+
+[[partition]]
+number = 1
+windows_side = false
+role = "esp"
+what = "EFI system partition (GRUB + Windows Boot Manager; /boot/efi on Garuda)"
+type_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+unique_guid = "2b8dfc56-508d-4e0e-9914-8c1edd067549"
+first_lba = 4096
+sectors = 9003008
+attributes = 0
+
+[[partition]]
+number = 2
+windows_side = false
+role = "absent"
+what = "Garuda's btrfs root"
+type_guid = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+unique_guid = "de103e66-eb04-4897-9603-6332e855c747"
+first_lba = 9007104
+sectors = 1677721600
+attributes = 0
+
+[[partition]]
+number = 3
+windows_side = true
+role = "absent"
+what = "FASTGAMES (Windows D:)"
+type_guid = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
+unique_guid = "485d289a-5398-4c30-ac94-280326d6868d"
+first_lba = 1686728704
+sectors = 941852672
+attributes = 0
+
+[[partition]]
+number = 4
+windows_side = true
+role = "mapped"
+what = "Microsoft reserved partition"
+type_guid = "e3c9e316-0b5c-4db8-817d-f92df00215ae"
+unique_guid = "732937f0-4a3c-473e-8233-ab188a4c5e18"
+first_lba = 2628581376
+sectors = 32768
+attributes = 0x8000000000000000
+
+[[partition]]
+number = 5
+windows_side = true
+role = "mapped"
+what = "Windows C:"
+type_guid = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
+unique_guid = "c52df2c1-31af-49fd-b0b0-8758c46f948d"
+first_lba = 2628614144
+sectors = 5371123712
+attributes = 0
+
+[[partition]]
+number = 6
+windows_side = true
+role = "mapped"
+what = "Windows Recovery (WinRE)"
+type_guid = "de94bba4-06d1-4d40-a16a-bfd50179d6ac"
+unique_guid = "ff2ac5bc-cc40-4cb6-a87e-afad94f1f750"
+first_lba = 7999737856
+sectors = 1832960
+attributes = 0x8000000000000001

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.png
+/scratch/
+# never commit anything generated on a host: images, overlays, credentials
+*.img
+*.qcow2
+*.fd
+smb-password
+*.cred
+.env
+.env.*

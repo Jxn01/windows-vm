@@ -1,0 +1,8 @@
+#!/bin/sh
+# windows-vm (~/Projects/windows-vm): for the domains `windows` and `windows-test` only, audit the domain XML,
+# run the pre-flight and assemble the real-C: disk on `prepare` (a non-zero exit aborts the start), tear it
+# down on `release`, refuse saved-state restores and migrations. Every other domain is left alone.
+case "$1" in
+    windows|windows-test) exec /usr/bin/python3 -I /usr/local/lib/windows-vm/winvm-root hook "$@" ;;
+esac
+exit 0

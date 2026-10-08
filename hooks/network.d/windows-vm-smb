@@ -1,0 +1,8 @@
+#!/bin/sh
+# windows-vm: smbd listens only on lo + virbr0 (`bind interfaces only`) and binds the interfaces that exist when
+# it starts. virbr0 appears when libvirt starts the `default` network, which can be after smbd - so restart smbd
+# then. Backgrounded: a libvirt hook must not block, and must never call back into libvirt.
+if [ "$1" = default ] && [ "$2" = started ]; then
+    (sleep 1; systemctl try-restart smb.service) >/dev/null 2>&1 &
+fi
+exit 0

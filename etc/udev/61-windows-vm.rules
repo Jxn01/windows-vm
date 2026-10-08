@@ -1,0 +1,4 @@
+# Installed by ~/Projects/windows-vm: keep desktop tools (udisks, GNOME Files/Disks) away from the assembled
+# Windows-VM disk and the loop devices behind it - nothing on Garuda may mount or offer them.
+SUBSYSTEM=="block", ENV{DM_NAME}=="winvm-*", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
+SUBSYSTEM=="block", KERNEL=="loop*", ATTR{loop/backing_file}=="/var/lib/windows-vm/*", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
