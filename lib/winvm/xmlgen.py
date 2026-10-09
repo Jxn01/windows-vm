@@ -36,6 +36,10 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
         raise ValueError(domain)
     test = domain == config.TEST_DOMAIN
     dm = f"/dev/mapper/{config.DM_NAME[domain]}"
+    bus = config.DISK_BUS
+    tgt = "nvme0n1" if bus == "nvme" else "sda"
+    # The NVMe controller carries the serial; a SATA disk carries it on the disk element.
+    disk_serial = "" if bus == "nvme" else f"\n      <serial>{config.DISK_SERIAL}</serial>"
     if test:
         disk = f"""
     <disk type='file' device='disk'>
@@ -46,8 +50,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
         <source dev='{dm}'/>
         <backingStore/>
       </backingStore>
-      <target dev='sda' bus='sata'/>
-      <serial>{config.DISK_SERIAL}</serial>
+      <target dev='{tgt}' bus='{bus}'/>{disk_serial}
       <blockio logical_block_size='512' physical_block_size='512'/>
     </disk>"""
     else:
@@ -55,8 +58,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
     <disk type='block' device='disk'>
       <driver name='qemu' type='raw' cache='none' io='native' discard='ignore'/>
       <source dev='{dm}'/>
-      <target dev='sda' bus='sata'/>
-      <serial>{config.DISK_SERIAL}</serial>
+      <target dev='{tgt}' bus='{bus}'/>{disk_serial}
       <blockio logical_block_size='512' physical_block_size='512'/>
     </disk>"""
     sysinfo = ""
@@ -71,6 +73,8 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
     </system>
   </sysinfo>"""
         smbios = "\n    <smbios mode='sysinfo'/>"
+    controller = ("<controller type='nvme' index='0'>\n      <serial>" + config.DISK_SERIAL + "</serial>\n    </controller>"
+                  if bus == "nvme" else "<controller type='sata' index='0'/>")
     title = "Windows (real C:, read-write)" if not test else "Windows TEST (real C: read-only + throwaway overlay)"
     uuid_el = f"\n  <uuid>{uuid}</uuid>" if uuid else ""
     return f"""<domain type='kvm'>
@@ -114,7 +118,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
   </pm>
   <devices>
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
-    <controller type='sata' index='0'/>{disk}
+    {controller}{disk}
     <controller type='usb' index='0' model='qemu-xhci' ports='15'/>
     <controller type='pci' index='0' model='pcie-root'/>
     <interface type='network'>
@@ -223,10 +227,9 @@ def audit(xml_text: str, domain: str) -> list[str]:
         if d.get("device") != "disk":
             p.append(f"a {d.get('device')} device is attached (no CD-ROMs/floppies: install media comes over SMB)")
         tgt = d.find("target")
-        if tgt is None or tgt.get("bus") != "sata":
-            p.append("the disk must be on the SATA bus: Windows boots it with the inbox storahci driver (boot-start, "
-                     "used by the hardware too). QEMU's NVMe ends in INACCESSIBLE_BOOT_DEVICE (T29), virtio has no "
-                     "inbox driver")
+        if tgt is None or tgt.get("bus") != config.DISK_BUS:
+            p.append(f"the disk must be on the {config.DISK_BUS} bus (config.DISK_BUS): Windows boots it with the "
+                     "inbox stornvme/storahci driver. virtio has no inbox driver")
         bio = d.find("blockio")
         if bio is None or bio.get("logical_block_size") != "512":
             p.append("disk logical block size must be 512 (T17)")

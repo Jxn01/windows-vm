@@ -58,17 +58,26 @@ class GptParse(unittest.TestCase):
 
 
 class Blanking(unittest.TestCase):
-    def test_vm_images_blank_only_absent_entries(self):
+    def test_vm_images_keep_all_entries(self):
+        # The VM GPT = the full real table (entries 1..6). Blanking entries 2/3 broke ARC partition numbering
+        # (multi(0)disk(0)rdisk(0)partition(5)) and bugchecked 0x7B - root cause, 2026-10-09. p2/p3 DATA is
+        # zeroed by the dm, but their GPT ENTRIES stay so numbering matches the real disk.
         lay, t = real_layout(), real_table()
         head, tail, vm = layout.vm_images(lay, t)
         self.assertEqual(len(head), 4096 * 512)
         self.assertEqual(len(tail), 33 * 512)
-        self.assertEqual([e.number for e in vm.entries], [1, 4, 5, 6])
+        self.assertEqual([e.number for e in vm.entries], [1, 2, 3, 4, 5, 6])
         for e in vm.entries:
-            self.assertEqual(e, t.entry(e.number))  # numbers, GUIDs, LBAs, attributes untouched (T6)
+            self.assertEqual(e, t.entry(e.number))  # byte-for-byte the real table
         self.assertEqual(vm.primary.disk_guid, t.primary.disk_guid)
         self.assertEqual(head[:512], PRIMARY[:512])  # protective MBR unchanged
-        self.assertEqual(head[34 * 512:], bytes(len(head) - 34 * 512))  # nothing else carried over
+        # p2/p3 are STILL zeroed in the dm table even though their GPT entries remain:
+        text = layout.dm_table(lay, DEVICES)
+        for n in (2, 3):
+            p = lay.part(n)
+            covering = [ln for ln in text.splitlines()
+                        if int(ln.split()[0]) <= p.first_lba < int(ln.split()[0]) + int(ln.split()[1])]
+            self.assertEqual(covering[0].split()[2], "zero")
 
     def test_blanking_missing_entry_refuses(self):
         with self.assertRaises(gpt.GptError):
@@ -76,7 +85,7 @@ class Blanking(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("sgdisk"), "sgdisk not installed")
     def test_sgdisk_reads_the_vm_table_independently(self):
-        """An independent GPT implementation must see exactly the real table minus p2/p3."""
+        """An independent GPT implementation must see the FULL real table (all 6 entries kept; ARC numbering)."""
         lay, t = real_layout(), real_table()
         head, tail, _ = layout.vm_images(lay, t)
         with tempfile.TemporaryDirectory() as td:
@@ -92,11 +101,11 @@ class Blanking(unittest.TestCase):
             p = subprocess.run(["sgdisk", "-p", img], capture_output=True, text=True).stdout
             self.assertIn("0897A6E9-AD1D-41CE-A152-026976DA8CAE", p)
             rows = [line.split() for line in p.splitlines() if line.strip()[:1].isdigit() and len(line.split()) > 5]
-            self.assertEqual([r[0] for r in rows], ["1", "4", "5", "6"])
+            self.assertEqual([r[0] for r in rows], ["1", "2", "3", "4", "5", "6"])
             for r in rows:
                 e = t.entry(int(r[0]))
                 self.assertEqual((int(r[1]), int(r[2])), (e.first_lba, e.last_lba))
-            for n in (1, 4, 5, 6):
+            for n in (1, 2, 3, 4, 5, 6):
                 info = subprocess.run(["sgdisk", "-i", str(n), img], capture_output=True, text=True).stdout
                 self.assertIn(str(t.entry(n).unique_guid).upper(), info)
 

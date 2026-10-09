@@ -105,7 +105,7 @@ def main() -> int:
             dev = dm.build(domain, lay, "itest-password", log=lambda m: print("     " + m))
             p = subprocess.run(["sgdisk", "-p", dev], capture_output=True, text=True).stdout
             rows = [ln.split() for ln in p.splitlines() if ln.strip()[:1].isdigit() and len(ln.split()) > 5]
-            check([r[0] for r in rows] == ["1", "4", "5", "6"], f"sgdisk sees partitions 1,4,5,6 on {dev}")
+            check([r[0] for r in rows] == ["1", "2", "3", "4", "5", "6"], f"sgdisk sees all 6 partitions on {dev}")
             check(str(synth.primary.disk_guid).upper() in p, "same disk GUID as the source table")
             fd = os.open(dev, os.O_RDONLY)
             try:

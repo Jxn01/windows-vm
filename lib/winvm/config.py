@@ -49,7 +49,10 @@ GUEST_IP = "192.168.122.10"
 HOST_IP = "192.168.122.1"
 NETWORK = "default"
 BRIDGE = "virbr0"
-DISK_SERIAL = "JXNWINVM0001"  # the VM disk's serial (SATA, see xmlgen: trap T29)
+DISK_SERIAL = "JXNWINVM0001"  # the VM disk's serial
+# How the single disk is presented to Windows. "nvme" (stornvme, like the real hardware - class-registered in
+# C:'s driver DB) or "sata" (ich9 AHCI / storahci). Set per the P2V diagnosis in the plan record.
+DISK_BUS = "nvme"
 # SMBIOS marker the VM-mode guard looks for (trap T8). The hardware never reports these.
 SMBIOS_MANUFACTURER = "jxn"
 SMBIOS_PRODUCT = "windows-vm"

@@ -233,16 +233,27 @@ def _is_majmin(s: str) -> bool:
 
 
 def vm_images(lay: Layout, table: gpt.Table) -> tuple[bytes, bytes, gpt.Table]:
-    """(head image, tail image, the VM's table) from the live table: absent entries blanked, CRCs redone."""
-    absent = {p.number for p in lay.by_role("absent")}
-    head, tail, vm = gpt.without(table, absent, lay.head_sectors)
-    expect = {p.number for p in lay.parts} - absent
+    """(head image, tail image, the VM's table) = the FULL real partition table, byte-for-byte.
+
+    Every GPT entry is KEPT, including the 'absent' ones (p2 Garuda, p3 FASTGAMES). Only their DATA is a dm
+    'zero' target (see segments/dm_table), so no btrfs/FASTGAMES content ever reaches the VM, but the partition
+    table the guest sees is identical to the real disk's.
+
+    🚨 Why entries must NOT be blanked (root cause of the 0x7B boot, found by memory dump 2026-10-09): Windows
+    opens the boot volume by its ARC name `multi(0)disk(0)rdisk(0)partition(5)` (C: is GPT partition 5). winload
+    emits `partition(5)` counting GPT slots, but the kernel's partmgr renumbers only the PRESENT partitions - so
+    with slots 2/3 removed, C: became partition(3), `partition(5)` was not found, and the kernel bugchecked
+    INACCESSIBLE_BOOT_DEVICE / STATUS_OBJECT_NAME_NOT_FOUND. Keeping all six entries makes slot number == present
+    order == the real disk, so winload and the kernel agree on partition(5).
+    """
+    head, tail, vm = gpt.without(table, set(), lay.head_sectors)  # blank nothing; copy + recompute CRC (identical)
+    expect = {p.number for p in lay.parts}
     got = {e.number for e in vm.entries}
     if got != expect:
-        raise LayoutError(f"VM table has entries {sorted(got)}, expected {sorted(expect)}")
+        raise LayoutError(f"VM table has entries {sorted(got)}, expected {sorted(expect)} (the full real table)")
     for e in vm.entries:
         if e != table.entry(e.number):
-            raise LayoutError(f"entry {e.number} changed while blanking others")
+            raise LayoutError(f"entry {e.number} changed")
     if vm.primary.disk_guid != table.primary.disk_guid:
         raise LayoutError("disk GUID changed")
     return head, tail, vm
