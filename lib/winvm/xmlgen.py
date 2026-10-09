@@ -124,7 +124,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
     <interface type='network'>
       <mac address='{config.MAC}'/>
       <source network='{config.NETWORK}'/>
-      <model type='e1000e'/>
+      <model type='{config.NIC_MODEL}'/>
     </interface>
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='ps2'/>

@@ -45,6 +45,9 @@ VCPUS = 8                 # 4 cores x 2 threads (plan D5)
 CORES, THREADS = 4, 2
 MEMORY_MIB = 8192
 MAC = "52:54:00:57:49:4e"  # 57:49:4e = "WIN"
+# Emulated NIC model. "e1000" (82540EM) has the widest inbox-driver coverage in Windows; "e1000e" (82574L)
+# did not get network at the login screen on 25H2 (driver not inbox-installed). virtio has no inbox driver.
+NIC_MODEL = "e1000"
 GUEST_IP = "192.168.122.10"
 HOST_IP = "192.168.122.1"
 NETWORK = "default"
