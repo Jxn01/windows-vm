@@ -260,6 +260,16 @@ if($Mode -eq 'status'){
 }
 $kind = if($Mode -eq 'auto'){ Get-BootKind } else { $Mode }
 Log "guard start: Mode=$Mode kind=$kind"
+# PreventDeviceEncryption=1 (D3/T4): permanent, both hardware and VM. Stops Windows auto-encrypting C: on the
+# hardware (which would break the whole VM scheme and Garuda reading C:). Needs SYSTEM - works from the boot task.
+try {
+  $bl='HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
+  if(-not (Test-Path $bl)){ New-Item -Path $bl -Force | Out-Null }
+  if((Get-ItemProperty -Path $bl -Name PreventDeviceEncryption -ErrorAction SilentlyContinue).PreventDeviceEncryption -ne 1){
+    New-ItemProperty -Path $bl -Name PreventDeviceEncryption -PropertyType DWord -Value 1 -Force | Out-Null
+    Log "PreventDeviceEncryption set to 1"
+  }
+} catch { Log "WARN PreventDeviceEncryption (needs SYSTEM): $($_.Exception.Message)" }
 switch($kind){
   'vm' {
     Ensure-SshRule                                                                     # FIRST: host access, fast

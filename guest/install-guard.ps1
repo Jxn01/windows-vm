@@ -40,14 +40,7 @@ Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $action -Trigge
   -Principal $principal -Settings $settings -Description 'windows-vm VM-mode guard (suppress autostarts in the VM; restore on hardware). ~/Projects/windows-vm' -Force | Out-Null
 Write-Host "registered SYSTEM boot task '$TaskName'"
 
-# PreventDeviceEncryption=1 (plan D3/T4): harmless on the hardware, and it guarantees Windows never auto-encrypts
-# C: (which would also stop Garuda reading it). Device Encryption cannot trigger in the VM anyway (no TPM / no
-# Secure Boot), but this closes it for good.
-$bl = 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
-New-Item -Path $bl -Force | Out-Null
-New-ItemProperty -Path $bl -Name PreventDeviceEncryption -PropertyType DWord -Value 1 -Force | Out-Null
-Write-Host "set PreventDeviceEncryption=1"
-
+# (PreventDeviceEncryption=1 is set by the guard itself, which runs as SYSTEM - that key needs SYSTEM rights.)
 # The guard runs at the NEXT boot. Install this from the HARDWARE Windows (S:\Projects\windows-vm\guest\) so it is
 # in place before the VM is ever used - the hardware run detects hardware and does nothing, the first VM boot
 # detects the VM and suppresses. (It can also be installed from inside the VM, but the hardware is simplest/safest.)
