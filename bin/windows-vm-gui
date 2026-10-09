@@ -1,0 +1,24 @@
+#!/bin/sh
+# Start the Windows VM (the real C: half) and open its graphical console (virt-viewer).
+# Backs the Desktop shortcut and the "Windows VM" app-menu entry (~/Projects/windows-vm).
+#
+# Pre-flight can legitimately REFUSE a start (C: mounted on Linux, Windows hibernated/dirty,
+# GPT drift, the other VM already running, …). A GUI double-click has no terminal, so on any
+# failure we show winvm's own output (its ok/FAIL lines) in a dialog instead of failing silently.
+PATH="/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:$PATH"; export PATH
+
+note() { command -v notify-send >/dev/null 2>&1 && notify-send -i virt-viewer -t 4000 "Windows VM" "$1"; }
+
+note "Starting — pre-flight and boot…"
+out=$(winvm start 2>&1); rc=$?
+if [ "$rc" -ne 0 ]; then
+    if command -v zenity >/dev/null 2>&1; then
+        printf '%s\n' "$out" | zenity --text-info --title="Windows VM — did not start" \
+            --width=820 --height=480 --font="monospace 10" 2>/dev/null
+    else
+        note "Did not start — run 'winvm start' in a terminal to see why."
+    fi
+    exit "$rc"
+fi
+note "Booted — opening the window. Sign in with your PASSWORD (never set a PIN)."
+exec winvm console

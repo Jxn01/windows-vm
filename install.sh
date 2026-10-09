@@ -160,9 +160,20 @@ if ! sudo -u $OWNER ssh-keygen -F windows-vm -f "$kh" >/dev/null 2>&1; then
     fi
 fi
 
-say "11. desktop entry for the owner"
-install -D -m 0644 "$REPO/etc/windows-vm.desktop" "$OWNER_HOME/.local/share/applications/windows-vm.desktop"
-chown -R $OWNER:$OWNER "$OWNER_HOME/.local/share/applications/windows-vm.desktop" 2>/dev/null || true
+say "11. GUI launcher + app-menu entry + Desktop shortcut for the owner"
+install -m 0755 "$REPO/bin/windows-vm-gui" /usr/local/bin/windows-vm-gui
+install -D -m 0644 -o $OWNER -g $OWNER "$REPO/etc/windows-vm.desktop" \
+    "$OWNER_HOME/.local/share/applications/windows-vm.desktop"
 update-desktop-database "$OWNER_HOME/.local/share/applications" 2>/dev/null || true
+# Desktop shortcut (double-click icon). GNOME needs it executable AND trusted; "trusted" is per-user
+# gvfs metadata, so set it as the owner with their session bus (best-effort - otherwise the owner
+# right-clicks the icon once and picks "Allow Launching").
+dsk=$(sudo -u $OWNER xdg-user-dir DESKTOP 2>/dev/null); [ -d "$dsk" ] || dsk="$OWNER_HOME/Desktop"
+if [ -d "$dsk" ]; then
+    install -m 0755 -o $OWNER -g $OWNER "$REPO/etc/windows-vm.desktop" "$dsk/windows-vm.desktop"
+    bus="unix:path=/run/user/$(id -u $OWNER)/bus"
+    sudo -u $OWNER env DBUS_SESSION_BUS_ADDRESS="$bus" gio set "$dsk/windows-vm.desktop" \
+        metadata::trusted true 2>/dev/null || true
+fi
 
 say "done - try: winvm preflight"
