@@ -78,4 +78,7 @@ WU_SINKHOLE = (
 
 # --- stop chain (traps T11/T12) -------------------------------------------------------------------------
 STOP_TIMEOUT = 300  # seconds to wait for a clean guest shutdown
+# Recovery/diagnostic BCD flags for the THROWAWAY test VM only (root, 0600, tmpfs): lines "key=value",
+# e.g. "safeboot=minimal" / "hypervisorlaunchtype=off". Applied to the PRIVATE ESP's BCD; never real C:.
+BCD_FLAGS_FILE = __import__("pathlib").Path("/run/windows-vm/bcd-flags")
 SSH_ALIAS = "windows-vm"

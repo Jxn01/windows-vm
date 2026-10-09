@@ -70,7 +70,8 @@ def _run(argv, env=None):
     return cp
 
 
-def build(real_esp: Path, out: Path, sectors: int, password: str, sector_size: int = 512) -> Built:
+def build(real_esp: Path, out: Path, sectors: int, password: str, sector_size: int = 512,
+          bcd_flags: dict | None = None, log=lambda m: None) -> Built:
     """Build the private ESP image at `out` (atomically) from the real ESP mounted at `real_esp`."""
     src_ms = real_esp / MS_DIR
     if not (real_esp / BOOTMGR).is_file():
@@ -101,6 +102,15 @@ def build(real_esp: Path, out: Path, sectors: int, password: str, sector_size: i
             _run(["mcopy", "-Q", "-i", img, str(m), f"::/{MARKER}"], env)
             _run(["mcopy", "-Q", "-i", img, str(c), f"::/{CRED}"], env)
         manifest = verify(tmp, real_esp, password)
+        if bcd_flags:
+            from . import bcd as _bcd
+            with tempfile.TemporaryDirectory(prefix="winvm-bcd-") as td:
+                os.chmod(td, 0o700)
+                local = Path(td) / "BCD"
+                _run(["mcopy", "-Q", "-i", f"{tmp}", f"::/{MS_DIR}/Boot/BCD", str(local)], env)
+                _bcd.apply_flags(str(local), bcd_flags, log=log)
+                _run(["mcopy", "-o", "-Q", "-i", f"{tmp}", str(local), f"::/{MS_DIR}/Boot/BCD"], env)
+                manifest[f"{MS_DIR}/Boot/BCD"] = sha256(local)
         os.replace(tmp, out)
     except BaseException:
         tmp.unlink(missing_ok=True)

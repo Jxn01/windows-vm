@@ -78,7 +78,7 @@ def our_loops() -> list[str]:
     return sorted(out)
 
 
-def build(domain: str, lay: layout.Layout, password: str, log=print) -> str:
+def build(domain: str, lay: layout.Layout, password: str, log=print, bcd_flags: dict | None = None) -> str:
     readonly = domain == config.TEST_DOMAIN
     name = config.DM_NAME[domain]
     probe = RealProbe()
@@ -96,7 +96,8 @@ def build(domain: str, lay: layout.Layout, password: str, log=print) -> str:
     _write_private(config.HEAD_IMG, head)
     _write_private(config.TAIL_IMG, tail)
     espp = lay.by_role("esp")[0]
-    built = esp.build(config.REAL_ESP_MOUNT, config.ESP_IMG, espp.sectors, password, lay.logical_block_size)
+    built = esp.build(config.REAL_ESP_MOUNT, config.ESP_IMG, espp.sectors, password, lay.logical_block_size,
+                      bcd_flags=bcd_flags, log=log)
     log(f"private ESP rebuilt from {config.REAL_ESP_MOUNT}: {len(built.manifest)} files verified")
     _log_manifest(built.manifest)
 

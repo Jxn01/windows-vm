@@ -253,8 +253,11 @@ def audit(xml_text: str, domain: str) -> list[str]:
     # Windows' Automatic Repair, which would "repair" the REAL C:
     if not any(pn.get("model") == "hyperv" for pn in dev.findall("panic")):
         p.append("no <panic model='hyperv'/> device (T30: crashes must be caught, logged and stop the VM)")
-    if root.findtext("on_crash") != "destroy":
-        p.append("on_crash must be destroy (T30: never reboot a crashed VM into Automatic Repair)")
+    # T30: a crashed VM must never REBOOT (that would run Automatic Repair against the real C:). destroy,
+    # preserve and the coredump-*-destroy variants all stop instead of rebooting; preserve freezes the BSOD
+    # on screen for diagnosis. restart/coredump-restart are refused.
+    if root.findtext("on_crash") not in ("destroy", "preserve", "coredump-destroy"):
+        p.append("on_crash must be destroy/preserve/coredump-destroy (T30: a crashed VM must never reboot into Automatic Repair)")
     # T26/D5: the network, fixed MAC
     ifs = dev.findall("interface")
     if len(ifs) != 1:

@@ -55,6 +55,24 @@ def load_layout() -> layout.Layout:
     return layout.load(config.LAYOUT_FILE)
 
 
+def read_bcd_flags() -> dict | None:
+    """Recovery/diagnostic BCD flags for the test VM, from a root-only tmpfs file (see config). None if absent."""
+    f = config.BCD_FLAGS_FILE
+    if not f.exists():
+        return None
+    st = f.stat()
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        raise PermissionError(f"{f} must be root-owned and not group/world writable")
+    flags = {}
+    for line in f.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        k, _, v = line.partition("=")
+        flags[k.strip()] = v.strip()
+    return flags or None
+
+
 def smb_password() -> str:
     st = os.stat(config.SMB_PASSWORD_FILE)
     if st.st_uid != 0 or st.st_mode & 0o077:
@@ -179,7 +197,10 @@ def _prepare(domain: str, xml_text: str) -> int:
             if why:
                 say(f"REFUSED: the throwaway overlay is stale - {why}. Run `winvm test new`.")
                 return 1
-        dm.build(domain, lay, smb_password(), log=say)
+        flags = read_bcd_flags() if domain == config.TEST_DOMAIN else None
+        if flags:
+            say(f"BCD flags for this throwaway boot: {flags}")
+        dm.build(domain, lay, smb_password(), log=say, bcd_flags=flags)
         if domain == config.TEST_DOMAIN and not config.OVERLAY.exists():
             overlay_new(lay)
     except Exception as e:  # noqa: BLE001
@@ -223,8 +244,12 @@ def esp_manifest(label: str) -> int:
 INSPECT_STATE = dm.RUN_DIR / "inspect.json"
 
 
+OVERLAY_MNT = Path("/run/windows-vm/overlay-c")
+
+
 def inspect(rest: list[str]) -> int:
     sub = rest[0] if rest else "status"
+    rw = "--rw" in rest
     lay = load_layout()
     if sub == "start":
         if INSPECT_STATE.exists():
@@ -235,9 +260,6 @@ def inspect(rest: list[str]) -> int:
             if st not in ("shut off", ""):
                 print(f"{d} is {st} - inspection needs both VMs off")
                 return 1
-        if not config.OVERLAY.exists():
-            print("no overlay to inspect")
-            return 1
         checks = preflight.run(RealProbe(), lay)
         bad = preflight.refusals(checks)
         if bad:
@@ -245,14 +267,21 @@ def inspect(rest: list[str]) -> int:
             return 1
         # nbd with max_part=0: the kernel never scans the overlay's partition table, so udev never creates
         # /dev/disk/by-partuuid links carrying the REAL partitions' GUIDs for it.
-        mp = Path("/sys/module/nbd/parameters/max_part")
-        if mp.exists() and mp.read_text().strip() != "0":
+        mpp = Path("/sys/module/nbd/parameters/max_part")
+        if mpp.exists() and mpp.read_text().strip() != "0":
             print("the nbd module is loaded with max_part != 0 - refusing (partition scan would duplicate PARTUUIDs)")
             return 1
         subprocess.run(["modprobe", "nbd", "max_part=0", "nbds_max=4"], check=True)
+        # The dm is ALWAYS read-only; the overlay qcow2 captures every write. The real C: (p5) is never
+        # written or mounted here - only this throwaway overlay is, which is exactly the goal's rule.
         dm.build(config.TEST_DOMAIN, lay, smb_password(), log=lambda m: print(m))
+        if not config.OVERLAY.exists():
+            overlay_new(lay)
         nbd = next(f"/dev/nbd{i}" for i in range(4) if Path(f"/sys/block/nbd{i}/pid").exists() is False)
-        subprocess.run(["qemu-nbd", "--read-only", "--fork", "-f", "qcow2", "-c", nbd, str(config.OVERLAY)], check=True)
+        qargv = ["qemu-nbd", "--fork", "-f", "qcow2", "-c", nbd, str(config.OVERLAY)]
+        if not rw:
+            qargv.insert(1, "--read-only")
+        subprocess.run(qargv, check=True)
         subprocess.run(["udevadm", "settle"])
         c = lay.part(lay.windows_partition)
         bs = lay.logical_block_size
@@ -264,19 +293,38 @@ def inspect(rest: list[str]) -> int:
         else:
             print(f"{nbd} never reached the disk's size")
             return 1
-        loop = subprocess.run(["losetup", "--find", "--show", "--read-only", "--offset", str(c.first_lba * bs),
-                               "--sizelimit", str(c.sectors * bs), nbd], check=True, capture_output=True,
-                              text=True).stdout.strip()
-        INSPECT_STATE.write_text(json.dumps({"nbd": nbd, "loop": loop}))
+        largv = ["losetup", "--find", "--show", "--offset", str(c.first_lba * bs),
+                 "--sizelimit", str(c.sectors * bs), nbd]
+        if not rw:
+            largv.insert(1, "--read-only")
+        loop = subprocess.run(largv, check=True, capture_output=True, text=True).stdout.strip()
+        state = {"nbd": nbd, "loop": loop, "rw": rw}
         got = int(subprocess.run(["blockdev", "--getsize64", loop], capture_output=True, text=True).stdout)
         if got != c.sectors * bs:
             print(f"{loop} has {got} bytes, expected {c.sectors * bs}")
+            INSPECT_STATE.write_text(json.dumps(state))
             return 1
-        print(f"overlay C: is readable at {loop} (read-only); `winvm-root inspect stop` when done")
+        if rw:
+            OVERLAY_MNT.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(["mount", "-t", "ntfs-3g", "-o", "rw", loop, str(OVERLAY_MNT)], capture_output=True, text=True)
+            if r.returncode != 0:
+                print("mount failed: " + r.stderr.strip())
+                INSPECT_STATE.write_text(json.dumps(state))
+                return 1
+            state["mnt"] = str(OVERLAY_MNT)
+            INSPECT_STATE.write_text(json.dumps(state))
+            print(f"overlay C: MOUNTED READ-WRITE at {OVERLAY_MNT} (writes go to the throwaway overlay, NOT real C:)")
+            print(f"  SYSTEM hive: {OVERLAY_MNT}/Windows/System32/config/SYSTEM   (edit with hivexsh -w)")
+            print("  `winvm-root inspect stop` to unmount and tear down")
+        else:
+            INSPECT_STATE.write_text(json.dumps(state))
+            print(f"overlay C: is readable at {loop} (read-only); `winvm-root inspect stop` when done")
         return 0
     if sub == "stop":
         if INSPECT_STATE.exists():
             st = json.loads(INSPECT_STATE.read_text())
+            if st.get("mnt"):
+                subprocess.run(["umount", st["mnt"]], capture_output=True)
             subprocess.run(["losetup", "--detach", st["loop"]], capture_output=True)
             subprocess.run(["qemu-nbd", "-d", st["nbd"]], capture_output=True)
             INSPECT_STATE.unlink()
@@ -290,7 +338,7 @@ def inspect(rest: list[str]) -> int:
         loop = json.loads(INSPECT_STATE.read_text())["loop"]
         tool = ["ntfscat", loop, rest[1]] if sub == "cat" else ["ntfsls", "-l", "-p", rest[1], loop]
         return subprocess.run(tool).returncode
-    print("usage: winvm-root inspect start|stop|cat PATH|ls PATH")
+    print("usage: winvm-root inspect start [--rw]|stop|cat PATH|ls PATH")
     return 2
 
 

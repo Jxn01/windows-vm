@@ -194,6 +194,10 @@ class Audit(unittest.TestCase):
             r.find("on_crash").text = "restart"
         self.refused(RW, f, "on_crash")
 
+    def test_crash_preserve_is_allowed(self):  # preserve freezes the BSOD; it does not reboot into repair
+        x = edit(xmlgen.domain_xml(RW), lambda r: r.find("on_crash").__setattr__("text", "preserve"))
+        self.assertEqual([m for m in xmlgen.audit(x, RW) if "on_crash" in m], [])
+
     def test_marker_missing_on_persistent(self):  # T8
         def f(r):
             r.remove(r.find("sysinfo"))
