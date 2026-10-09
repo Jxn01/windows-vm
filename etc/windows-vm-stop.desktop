@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Stop Windows VM
+GenericName=Shut the Windows VM down
+Comment=Cleanly shut down the Windows VM running on Garuda
+Exec=/usr/local/bin/windows-vm-stop-gui
+Icon=system-shutdown
+Terminal=false
+Categories=System;Emulator;
+Keywords=windows;vm;winvm;stop;shutdown;
+StartupNotify=false

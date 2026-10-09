@@ -160,20 +160,23 @@ if ! sudo -u $OWNER ssh-keygen -F windows-vm -f "$kh" >/dev/null 2>&1; then
     fi
 fi
 
-say "11. GUI launcher + app-menu entry + Desktop shortcut for the owner"
-install -m 0755 "$REPO/bin/windows-vm-gui" /usr/local/bin/windows-vm-gui
-install -D -m 0644 -o $OWNER -g $OWNER "$REPO/etc/windows-vm.desktop" \
-    "$OWNER_HOME/.local/share/applications/windows-vm.desktop"
-update-desktop-database "$OWNER_HOME/.local/share/applications" 2>/dev/null || true
-# Desktop shortcut (double-click icon). GNOME needs it executable AND trusted; "trusted" is per-user
+say "11. GUI launchers + app-menu entries + Desktop shortcuts for the owner (start + stop)"
+install -m 0755 "$REPO/bin/windows-vm-gui"      /usr/local/bin/windows-vm-gui
+install -m 0755 "$REPO/bin/windows-vm-stop-gui" /usr/local/bin/windows-vm-stop-gui
+# Desktop shortcuts (double-click icons). GNOME needs each executable AND trusted; "trusted" is per-user
 # gvfs metadata, so set it as the owner with their session bus (best-effort - otherwise the owner
 # right-clicks the icon once and picks "Allow Launching").
 dsk=$(sudo -u $OWNER xdg-user-dir DESKTOP 2>/dev/null); [ -d "$dsk" ] || dsk="$OWNER_HOME/Desktop"
-if [ -d "$dsk" ]; then
-    install -m 0755 -o $OWNER -g $OWNER "$REPO/etc/windows-vm.desktop" "$dsk/windows-vm.desktop"
-    bus="unix:path=/run/user/$(id -u $OWNER)/bus"
-    sudo -u $OWNER env DBUS_SESSION_BUS_ADDRESS="$bus" gio set "$dsk/windows-vm.desktop" \
-        metadata::trusted true 2>/dev/null || true
-fi
+bus="unix:path=/run/user/$(id -u $OWNER)/bus"
+for de in windows-vm windows-vm-stop; do
+    install -D -m 0644 -o $OWNER -g $OWNER "$REPO/etc/$de.desktop" \
+        "$OWNER_HOME/.local/share/applications/$de.desktop"
+    if [ -d "$dsk" ]; then
+        install -m 0755 -o $OWNER -g $OWNER "$REPO/etc/$de.desktop" "$dsk/$de.desktop"
+        sudo -u $OWNER env DBUS_SESSION_BUS_ADDRESS="$bus" gio set "$dsk/$de.desktop" \
+            metadata::trusted true 2>/dev/null || true
+    fi
+done
+update-desktop-database "$OWNER_HOME/.local/share/applications" 2>/dev/null || true
 
 say "done - try: winvm preflight"

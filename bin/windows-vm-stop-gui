@@ -1,0 +1,21 @@
+#!/bin/sh
+# Shut the Windows VM down cleanly (a clean Windows shutdown over SSH; ACPI power button as fallback)
+# and tear the assembled disk down. Backs the "Stop Windows VM" Desktop/app-menu icon (~/Projects/windows-vm).
+# Clicking it when the VM is already off is harmless (winvm stop prints "not running", exits 0).
+PATH="/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:$PATH"; export PATH
+
+note() { command -v notify-send >/dev/null 2>&1 && notify-send -i system-shutdown -t 6000 "Windows VM" "$1"; }
+
+note "Shutting the VM down…"
+out=$(winvm stop 2>&1); rc=$?
+if [ "$rc" -ne 0 ]; then
+    if command -v zenity >/dev/null 2>&1; then
+        printf '%s\n' "$out" | zenity --text-info --title="Windows VM — stop" \
+            --width=720 --height=360 --font="monospace 10" 2>/dev/null
+    else
+        note "Stop had a problem — run 'winvm stop' in a terminal to see why."
+    fi
+    exit "$rc"
+fi
+# winvm's last line is the human summary ("windows is off (clean shutdown)." / "windows is not running")
+note "$(printf '%s\n' "$out" | tail -1)"
