@@ -39,7 +39,23 @@ $RunKeys = @{ runHKLM   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $StartupDirs = @{ user   = (Join-Path $ProfilePath 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup')
                   common = 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup' }
 
-New-Item -ItemType Directory -Force -Path $Root | Out-Null
+function Secure-Root([string]$path){
+  # $path (and everything the guard keeps in it - guard.ps1, state.json, parked Run values/shortcuts) is read
+  # and executed by SYSTEM, so it must NOT be writable by normal users (else a planted guard.ps1 or tampered
+  # park = local privilege escalation). Lock it to SYSTEM + Administrators, inheritance off. Idempotent.
+  New-Item -ItemType Directory -Force -Path $path | Out-Null
+  $sys=[System.Security.Principal.SecurityIdentifier]'S-1-5-18'
+  $adm=[System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
+  $acl = Get-Acl -Path $path
+  $acl.SetAccessRuleProtection($true,$false)
+  foreach($r in @($acl.Access)){ [void]$acl.RemoveAccessRule($r) }
+  $acl.SetOwner($sys)
+  foreach($sid in @($sys,$adm)){
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
+  }
+  Set-Acl -Path $path -AclObject $acl
+}
+try { Secure-Root $Root } catch { }
 
 function Log([string]$m){
   $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m

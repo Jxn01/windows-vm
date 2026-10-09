@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windows VM
+GenericName=Windows (the rig's Windows half, as a VM)
+Comment=Start the real Windows C: as a VM on Garuda and open its console
+Exec=sh -c 'winvm start; winvm console'
+Icon=virt-manager
+Terminal=false
+Categories=System;Emulator;
+Keywords=windows;vm;winvm;

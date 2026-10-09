@@ -160,4 +160,9 @@ if ! sudo -u $OWNER ssh-keygen -F windows-vm -f "$kh" >/dev/null 2>&1; then
     fi
 fi
 
+say "11. desktop entry for the owner"
+install -D -m 0644 "$REPO/etc/windows-vm.desktop" "$OWNER_HOME/.local/share/applications/windows-vm.desktop"
+chown -R $OWNER:$OWNER "$OWNER_HOME/.local/share/applications/windows-vm.desktop" 2>/dev/null || true
+update-desktop-database "$OWNER_HOME/.local/share/applications" 2>/dev/null || true
+
 say "done - try: winvm preflight"
