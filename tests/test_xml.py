@@ -44,7 +44,7 @@ class Generated(unittest.TestCase):
         self.assertEqual(root.find("pm/suspend-to-disk").get("enabled"), "no")
         self.assertEqual(root.find("devices/disk/target").get("bus"), config.DISK_BUS)
         self.assertEqual(root.find("devices/disk/source").get("dev"), "/dev/mapper/winvm-rw")
-        self.assertEqual(root.find("devices/interface/model").get("type"), "e1000e")
+        self.assertEqual(root.find("devices/interface/model").get("type"), config.NIC_MODEL)
         self.assertEqual(root.find("devices/graphics/listen").get("type"), "socket")
         self.assertEqual(root.find("vcpu").text, "8")
         self.assertTrue(xmlgen.has_marker(root))
