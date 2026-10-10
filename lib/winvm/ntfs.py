@@ -31,6 +31,19 @@ VOLUME_FLAGS = {
 NOT_FOUND = re.compile(r"No such file or directory|Couldn't (find|open inode)", re.I)
 
 
+def _looks_not_found(returncode: int, err: str) -> bool:
+    """True if an ntfs-3g tool's non-zero exit means "the path does not exist".
+
+    Two ntfs-3g families have to be covered, or an absent path is misread as a real I/O error:
+      - some builds print a message (matched by NOT_FOUND), e.g. Garuda's;
+      - ntfs-3g 2022+ on Arch/EndeavourOS exits non-zero (ntfsls: 3) with an EMPTY stderr for a missing
+        path, while a genuine failure (dirty volume, bad open) always prints to stderr.
+    So a message match, OR a non-zero exit with no stderr at all, is "not found". Verified on the Legion:
+    `ntfsls /NoSuchDir` -> exit 3, empty stderr; a dirty volume -> non-zero WITH text.
+    """
+    return returncode != 0 and (bool(NOT_FOUND.search(err)) or not err.strip())
+
+
 class NtfsError(RuntimeError):
     """A tool could not answer; the caller must treat the question as unanswered (refuse)."""
 
@@ -84,7 +97,7 @@ def file_head(dev: str, path: str, size: int = 4096, popen=subprocess.Popen) -> 
         p.stderr.close()
     if len(data) == size:
         return data
-    if p.returncode != 0 and NOT_FOUND.search(err):
+    if _looks_not_found(p.returncode, err):
         return None
     if p.returncode == 0:
         return data  # a file shorter than `size`
@@ -96,7 +109,7 @@ def listdir(dev: str, path: str, run=_default_run) -> list[str] | None:
     cp = run(["ntfsls", "-p", path, dev])
     err = cp.stderr.decode(errors="replace")
     if cp.returncode != 0:
-        if NOT_FOUND.search(err):
+        if _looks_not_found(cp.returncode, err):
             return None
         raise NtfsError(f"ntfsls {path} failed ({cp.returncode}): {err.strip()[:300]}")
     return [n for n in cp.stdout.decode(errors="replace").splitlines() if n not in (".", "..", "")]

@@ -172,6 +172,8 @@ class NtfsParsing(unittest.TestCase):
     def test_file_head_absent_vs_error(self):
         self.assertIsNone(ntfs.file_head("/dev/x", "/hiberfil.sys",
                                          popen=FakePopen(b"", 1, b"ERROR: Couldn't open inode: No such file or directory")))
+        # ntfs-3g 2022+ (Arch/EndeavourOS): a missing path exits non-zero with EMPTY stderr - still "absent".
+        self.assertIsNone(ntfs.file_head("/dev/x", "/hiberfil.sys", popen=FakePopen(b"", 3, b"")))
         with self.assertRaises(ntfs.NtfsError):  # "cannot see" must never read as "not there"
             ntfs.file_head("/dev/x", "/hiberfil.sys", popen=FakePopen(b"", 1, b"Failed to mount: Permission denied"))
         self.assertEqual(ntfs.file_head("/dev/x", "/f", popen=FakePopen(bytes(5000), 0, b"")), bytes(4096))
@@ -179,8 +181,13 @@ class NtfsParsing(unittest.TestCase):
     def test_listdir(self):
         self.assertEqual(ntfs.listdir("/dev/x", "/d", run=FakeRun(0, b".\n..\nSources\n")), ["Sources"])
         self.assertIsNone(ntfs.listdir("/dev/x", "/d", run=FakeRun(1, err=b"Couldn't find path")))
-        with self.assertRaises(ntfs.NtfsError):
+        # ntfs-3g 2022+ (Arch/EndeavourOS): `ntfsls /NoSuchDir` -> exit 3, EMPTY stderr. Must read as absent,
+        # not as an error, or every absent-path pre-flight check (no-feature-update, ...) false-fails (Legion).
+        self.assertIsNone(ntfs.listdir("/dev/x", "/d", run=FakeRun(3, err=b"")))
+        with self.assertRaises(ntfs.NtfsError):  # a real failure DOES print to stderr - must still raise
             ntfs.listdir("/dev/x", "/d", run=FakeRun(1, err=b"Permission denied"))
+        with self.assertRaises(ntfs.NtfsError):  # non-zero + stderr text that isn't a not-found message
+            ntfs.listdir("/dev/x", "/d", run=FakeRun(3, err=b"Input/output error"))
 
 
 if __name__ == "__main__":
