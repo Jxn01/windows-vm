@@ -41,9 +41,9 @@ if ((CHECK)); then
     rc=0
     chk() { if differs "$1" "$2"; then echo "DIFFERS  $2"; rc=1; else echo "ok       $2"; fi; }
     # the installed winvm is the repo's with its `_repo` line rewritten (step 2) — compare against that, not the raw file
-    sed 's|^_repo = .*|_repo = Path("/nonexistent")  # installed copy: always /usr/local/lib/windows-vm|' "$REPO/bin/winvm" \
-        > "${TMPDIR:-/tmp}/winvm.expected.$$"
-    chk "${TMPDIR:-/tmp}/winvm.expected.$$" /usr/local/bin/winvm; rm -f "${TMPDIR:-/tmp}/winvm.expected.$$"
+    # (a process substitution, not a temp file: this runs as root, and a predictable /tmp name is a symlink target)
+    chk <(sed 's|^_repo = .*|_repo = Path("/nonexistent")  # installed copy: always /usr/local/lib/windows-vm|' "$REPO/bin/winvm") \
+        /usr/local/bin/winvm
     chk "$REPO/bin/winvm-root" $LIB/winvm-root
     for f in "$REPO"/lib/winvm/*.py; do chk "$f" "$LIB/winvm/$(basename "$f")"; done
     chk "$REPO/etc/layout.toml" /etc/windows-vm/layout.toml

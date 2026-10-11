@@ -7,6 +7,7 @@ them but the check block never looked at them. This test fails when an `install`
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -28,10 +29,19 @@ def installed(text: str) -> set[str]:
 
 
 def checked(text: str) -> set[str]:
+    """The LAST argument of every `chk` call (quote-aware: the first one may be a `<(sed '…')` substitution)."""
     out = set()
     for line in _logical_lines(text):
-        for m in re.finditer(r"\bchk\s+(\S+)\s+(\S+)", line):
-            out.add(m.group(2).strip('";'))
+        for m in re.finditer(r"\bchk\s+", line):
+            lex = shlex.shlex(line[m.end():], posix=True, punctuation_chars=";")
+            lex.whitespace_split = True
+            args = []
+            for tok in lex:
+                if tok == ";":
+                    break
+                args.append(tok)
+            if len(args) >= 2:
+                out.add(args[-1])
     return out
 
 
