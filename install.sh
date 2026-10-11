@@ -40,7 +40,10 @@ if ((${#missing[@]})); then echo "missing tools: ${missing[*]}" >&2; exit 1; fi
 if ((CHECK)); then
     rc=0
     chk() { if differs "$1" "$2"; then echo "DIFFERS  $2"; rc=1; else echo "ok       $2"; fi; }
-    chk "$REPO/bin/winvm" /usr/local/bin/winvm
+    # the installed winvm is the repo's with its `_repo` line rewritten (step 2) — compare against that, not the raw file
+    sed 's|^_repo = .*|_repo = Path("/nonexistent")  # installed copy: always /usr/local/lib/windows-vm|' "$REPO/bin/winvm" \
+        > "${TMPDIR:-/tmp}/winvm.expected.$$"
+    chk "${TMPDIR:-/tmp}/winvm.expected.$$" /usr/local/bin/winvm; rm -f "${TMPDIR:-/tmp}/winvm.expected.$$"
     chk "$REPO/bin/winvm-root" $LIB/winvm-root
     for f in "$REPO"/lib/winvm/*.py; do chk "$f" "$LIB/winvm/$(basename "$f")"; done
     chk "$REPO/etc/layout.toml" /etc/windows-vm/layout.toml
@@ -51,6 +54,20 @@ if ((CHECK)); then
     chk "$REPO/etc/systemd/libvirt-guests-windows-vm.conf" /etc/systemd/system/libvirt-guests.service.d/windows-vm.conf
     chk "$REPO/etc/systemd/windows-vm-test-guard.service" /etc/systemd/system/windows-vm-test-guard.service
     chk "$REPO/etc/samba/smb.conf" /etc/samba/smb.conf
+    # step 11 — the launchers and the owner's Desktop icons (missing on the laptop until 2026-10-11 and nothing noticed)
+    chk "$REPO/bin/windows-vm-gui" /usr/local/bin/windows-vm-gui
+    chk "$REPO/bin/windows-vm-stop-gui" /usr/local/bin/windows-vm-stop-gui
+    dsk=$(sudo -u $OWNER xdg-user-dir DESKTOP 2>/dev/null); [ -d "$dsk" ] || dsk="$OWNER_HOME/Desktop"
+    for de in windows-vm windows-vm-stop; do
+        chk "$REPO/etc/$de.desktop" "$OWNER_HOME/.local/share/applications/$de.desktop"
+        chk "$REPO/etc/$de.desktop" "$dsk/$de.desktop"
+        if [ -x "$dsk/$de.desktop" ] && sudo -u $OWNER env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $OWNER)/bus" \
+                gio info -a metadata::trusted "$dsk/$de.desktop" 2>/dev/null | grep -q 'trusted: true'; then
+            echo "ok       $dsk/$de.desktop is executable + trusted"
+        else
+            echo "DIFFERS  $dsk/$de.desktop is not executable + trusted (GNOME will not launch it)"; rc=1
+        fi
+    done
     exit $rc
 fi
 
@@ -152,7 +169,9 @@ if ! sudo -u $OWNER ssh-keygen -F windows-vm -f "$kh" >/dev/null 2>&1; then
         cdev=/dev/disk/by-partuuid/$(python3 -I -c 'import sys; sys.path.insert(0, "/usr/local/lib/windows-vm"); from winvm import layout; L = layout.load("/etc/windows-vm/layout.toml"); print(L.part(L.windows_partition).unique_guid)')
         n=0
         for k in ssh_host_ed25519_key.pub ssh_host_ecdsa_key.pub ssh_host_rsa_key.pub; do
-            key=$(ntfscat "$cdev" "/ProgramData/ssh/$k" 2>/dev/null | tr -d '\r' | awk '{print $1, $2}')
+            # `|| true`: under `set -euo pipefail` one absent/unreadable key file aborted the WHOLE install here,
+            # so step 11 (the launchers + Desktop icons) never ran — the laptop had no icons for that reason
+            key=$(ntfscat "$cdev" "/ProgramData/ssh/$k" 2>/dev/null | tr -d '\r' | awk '{print $1, $2}') || true
             if [[ -n "$key" ]]; then echo "windows-vm $key" >> "$kh"; n=$((n+1)); fi
         done
         chown $OWNER:$OWNER "$kh"

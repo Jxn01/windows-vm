@@ -1,0 +1,57 @@
+"""Every file install.sh installs must also be compared by `install.sh --check`.
+
+On 2026-10-11 the laptop had no Windows-VM launchers or Desktop icons, and `--check` said nothing: step 11 installed
+them but the check block never looked at them. This test fails when an `install` destination has no matching `chk`.
+"""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+INSTALL_SH = Path(__file__).resolve().parent.parent / "install.sh"
+
+
+def _logical_lines(text: str) -> list[str]:
+    return text.replace("\\\n", " ").splitlines()
+
+
+def installed(text: str) -> set[str]:
+    """Destinations of every file-installing `install` (not `install -d`), quotes stripped."""
+    out = set()
+    for line in _logical_lines(text):
+        m = re.search(r"(?:^|;|do)\s*install\s+(?!-d\b)(.*?)(?:;|$)", line)
+        if m:
+            out.add(m.group(1).split()[-1].strip('"'))
+    return out
+
+
+def checked(text: str) -> set[str]:
+    out = set()
+    for line in _logical_lines(text):
+        for m in re.finditer(r"\bchk\s+(\S+)\s+(\S+)", line):
+            out.add(m.group(2).strip('";'))
+    return out
+
+
+def unchecked(text: str) -> set[str]:
+    inst, chk = installed(text), checked(text)
+    # the lib loop installs into a directory (`"$LIB/winvm/"`); its check names each file in the same directory
+    return {d for d in inst if d not in chk and not (d.endswith("/") and any(c.startswith(d) for c in chk))}
+
+
+class InstallCheckCoversEveryInstall(unittest.TestCase):
+    def test_positive_control(self):
+        sample = 'chk "$REPO/a" /usr/local/bin/a\ninstall -m 0755 "$REPO/a" /usr/local/bin/a\n' \
+                 'install -m 0755 "$REPO/b" /usr/local/bin/b\ninstall -d -m 0755 /x\n'
+        self.assertEqual(unchecked(sample), {"/usr/local/bin/b"})
+
+    def test_every_install_is_checked(self):
+        text = INSTALL_SH.read_text()
+        self.assertGreaterEqual(len(installed(text)), 12)        # the parser really saw the installer
+        self.assertEqual(unchecked(text), set(), "add a `chk` line for these to the --check block")
+
+
+if __name__ == "__main__":
+    unittest.main()

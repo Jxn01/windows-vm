@@ -13,7 +13,7 @@ git identity).
 ## Status (2026-10-09)
 
 - **P0/P1 complete.** Facts recorded, rollback material saved, host tooling built, installed and tested
-  (108 unit tests + a root end-to-end test on a synthetic disk with the real geometry).
+  (110 unit tests + a root end-to-end test on a synthetic disk with the real geometry).
 - **P2 blocked by a physical-to-virtual boot issue.** The installed Windows reaches early kernel init and
   bugchecks **`INACCESSIBLE_BOOT_DEVICE` (0x7B / `0xC0000034`)** when the kernel switches from UEFI firmware
   I/O to its own storage stack to mount `C:`. Identical on emulated NVMe and SATA and in Safe Mode, and with
