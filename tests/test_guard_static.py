@@ -41,6 +41,8 @@ class GuardStartsWhatTheBootSkipped(unittest.TestCase):
         body = function_body(GUARD, "Start-Restored")
         self.assertIn("-LogonType Interactive -RunLevel Limited", body)
         self.assertIn("Unregister-ScheduledTask -TaskName 'jxn-vm-late-start'", body)
+        self.assertIn("conhost.exe", body)                      # headless: Windows Terminal ignores SW_HIDE
+        self.assertNotIn("-WindowStyle Hidden", GUARD)
 
     def test_positive_control(self):
         self.assertEqual(function_body("function A {\n x\n}\nfunction B {\n y\n}\n", "B"), "function B {\n y\n}")
