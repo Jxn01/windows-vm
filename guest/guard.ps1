@@ -28,7 +28,11 @@ $LogFile     = Join-Path $Root 'guard.log'
 $RunPark     = 'HKLM:\SOFTWARE\jxn-vm\suppressed'        # parked Run VALUES live in the registry
 $StartupPark = Join-Path $Root 'suppressed-startup'      # parked Startup .lnk FILES live on disk
 $GuardTaskName = 'jxn-vm-guard'                          # this guard's own task - never disable it
-$ProfilePath = 'C:\Users\jxnpe'                          # the owner's profile (jxn)
+$ProfilePath = 'C:\Users\jxnpe'                          # fallback: the rig's owner profile (jxn)
+# The real owner profile is recorded by install-guard.ps1 (owner.json): the laptop's is C:\Users\jxn, and a guard
+# that hard-coded the rig's never saw the laptop owner's Run keys or Startup folder (found 2026-10-12).
+try { $o = Get-Content (Join-Path 'C:\ProgramData\jxn-vm' 'owner.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+      if($o.ProfilePath -and (Test-Path $o.ProfilePath)){ $ProfilePath = $o.ProfilePath } } catch { }
 $UserHiveMnt = 'HKU\jxn-vm-user'                         # temp mount for the owner's hive when not logged in
 
 # Services kept running even in VM mode: SSH, remote mgmt, firewall, security.
@@ -224,9 +228,45 @@ function Restore {
   Restore-Parked
   Remove-Item -Path $StateFile -Force
   Log "hardware restore complete; state cleared"
+  Start-Restored $state
+}
+
+function Start-Restored($state){
+  # The restore runs at boot, but a boot that RESTORES has already passed its auto-start points while everything was
+  # still suppressed: the service manager skipped the (then Disabled) services, boot-triggered tasks missed the boot,
+  # and an owner who logged on before this finished (T27 - the laptop, 2026-10-12: no Zebar, wtq, Windhawk, tunnel)
+  # got no logon autostarts. So start them now - services and boot tasks always, logon items only for a logged-on owner.
+  foreach($n in $state.services.PSObject.Properties.Name){
+    if((Norm $state.services.$n) -eq 'Automatic'){ try { Start-Service -Name $n -ErrorAction Stop; Log "started (restored auto service): $n" } catch { Log "WARN start svc $n : $($_.Exception.Message)" } }
+  }
+  $ownerSid = $null; try { $ownerSid = (Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -eq $ProfilePath }).SID } catch {}
+  $loggedOn = $false
+  if($ownerSid){ foreach($e in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue)){
+    try { if((Invoke-CimMethod -InputObject $e -MethodName GetOwnerSid).Sid -eq $ownerSid){ $loggedOn = $true } } catch {} } }
+  foreach($id in $state.tasks){
+    $name=Split-Path $id -Leaf; $path=$id.Substring(0,$id.Length-$name.Length)
+    $t = Get-ScheduledTask -TaskName $name -TaskPath $path -ErrorAction SilentlyContinue; if(-not $t){ continue }
+    $trig = ($t.Triggers | ForEach-Object { $_.CimClass.CimClassName }) -join ','
+    if($trig -match 'Boot' -or ($loggedOn -and $trig -match 'Logon')){
+      try { Start-ScheduledTask -TaskName $name -TaskPath $path -ErrorAction Stop; Log "started (restored task, missed its trigger): $id" } catch { Log "WARN start task $id : $($_.Exception.Message)" } }
+  }
+  if($loggedOn -and $script:RestoredLaunch.Count -gt 0){
+    # Startup .lnks and Run command lines must start INSIDE the owner's session: a one-shot task as the owner.
+    $cmds = foreach($x in $script:RestoredLaunch){ if($x -match '\.lnk$'){ "Start-Process -FilePath '$($x -replace "'","''")'" } else { "Start-Process cmd.exe -ArgumentList '/c start "" $($x -replace "'","''")' -WindowStyle Hidden" } }
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($cmds -join '; ')))
+    try {
+      Register-ScheduledTask -TaskName 'jxn-vm-late-start' -TaskPath '\' -Force `
+        -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -EncodedCommand $enc") `
+        -Principal (New-ScheduledTaskPrincipal -UserId $ownerSid -LogonType Interactive -RunLevel Limited) | Out-Null
+      Start-ScheduledTask -TaskName 'jxn-vm-late-start'; Start-Sleep -Seconds 5
+      Log "started $($script:RestoredLaunch.Count) restored Startup/Run item(s) in the owner's session"
+    } catch { Log "WARN late start of Startup/Run items: $($_.Exception.Message)" }
+    finally { Unregister-ScheduledTask -TaskName 'jxn-vm-late-start' -Confirm:$false -ErrorAction SilentlyContinue }
+  } elseif(-not $loggedOn){ Log "owner not logged on yet - logon autostarts will run at the logon" }
 }
 function Norm($m){ switch -regex ("$m"){ 'Disabled'{'Disabled'} 'Manual'{'Manual'} default{'Automatic'} } }
 
+$script:RestoredLaunch = New-Object System.Collections.Generic.List[string]   # .lnk paths / Run command lines
 function Restore-Parked {
   # Run entries from the registry park
   foreach($label in @('runHKLM','runHKLM32')){
@@ -238,7 +278,7 @@ function Restore-Parked {
   # Startup .lnks from the disk park
   foreach($k in $StartupDirs.Keys){
     $park = Join-Path $StartupPark $k
-    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ Move-Item $f.FullName (Join-Path $StartupDirs[$k] $f.Name) -Force; Log "startup restored [$k]: $($f.Name)" } }
+    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Join-Path $StartupDirs[$k] $f.Name; Move-Item $f.FullName $to -Force; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
   }
   Remove-Item -Path $RunPark -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue
@@ -249,6 +289,7 @@ function Restore-RunKey([string]$runKey,[string]$park,[string]$label){
     if($p.Name -like 'PS*'){ continue }
     $kind=(Get-Item $park).GetValueKind($p.Name)
     New-ItemProperty -Path $runKey -Name $p.Name -PropertyType $kind -Value $p.Value -Force | Out-Null
+    $script:RestoredLaunch.Add([string]$p.Value)
     Log "Run restored [$label]: $($p.Name)"
   }
 }

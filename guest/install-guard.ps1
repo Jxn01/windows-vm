@@ -4,7 +4,9 @@
     This is the ONLY persistent change the guard needs; it changes nothing else on the hardware Windows.
 #>
 [CmdletBinding()]
-param([switch]$Uninstall)
+param([switch]$Uninstall, [string]$ProfilePath = $env:USERPROFILE)
+# -ProfilePath: the OWNER's profile (whose Run keys / Startup folder the guard parks and restores). Default: the
+# profile of whoever runs this (run it as the owner). Recorded in owner.json - the guard used to hard-code the rig's.
 $ErrorActionPreference='Stop'
 $Root='C:\ProgramData\jxn-vm'; $TaskName='jxn-vm-guard'
 $Dest=Join-Path $Root 'guard.ps1'
@@ -29,6 +31,9 @@ Set-Acl -Path $Root -AclObject $acl
 Write-Host "secured $Root (SYSTEM + Administrators only)"
 Copy-Item -Path (Join-Path $PSScriptRoot 'guard.ps1') -Destination $Dest -Force
 Write-Host "installed $Dest"
+if(-not (Test-Path $ProfilePath)){ throw "owner profile $ProfilePath does not exist" }
+@{ ProfilePath = $ProfilePath } | ConvertTo-Json | Set-Content -Path (Join-Path $Root 'owner.json') -Encoding UTF8
+Write-Host "owner profile recorded: $ProfilePath"
 
 $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
              -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$Dest`" -Mode auto -Quiet"
