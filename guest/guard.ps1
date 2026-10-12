@@ -254,7 +254,7 @@ function Start-Restored($state){
     # Startup .lnks and Run command lines must start INSIDE the owner's session: a one-shot task as the owner.
     # conhost --headless, never powershell -WindowStyle Hidden: Windows Terminal (the default terminal) ignores
     # SW_HIDE and flashes a window on the owner's screen (seen 2026-10-12).
-    $cmds = foreach($x in $script:RestoredLaunch){ if($x -match '\.lnk$'){ "Start-Process -FilePath '$($x -replace "'","''")'" } else { "Start-Process cmd.exe -ArgumentList '/c start "" $($x -replace "'","''")' -WindowStyle Hidden" } }
+    $cmds = foreach($x in $script:RestoredLaunch){ if($x -match '\.lnk$'){ "Start-Process -FilePath '$($x -replace "'","''")'" } else { "& cmd.exe /c 'start `"`" $($x -replace "'","''")'" } }   # inherits the headless console: no window
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($cmds -join '; ')))
     try {
       Register-ScheduledTask -TaskName 'jxn-vm-late-start' -TaskPath '\' -Force `
