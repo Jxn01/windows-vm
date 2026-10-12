@@ -7,13 +7,18 @@
                         real world or change the hardware Windows: non-Microsoft scheduled tasks (MatterLights,
                         ambience-rgb, claude-rc, ...), non-Microsoft auto services, HKLM + user Run entries
                         (HASS.Agent, Steam, ...), the user's Startup-folder shortcuts (Zebar, wtq), Windows
-                        Update; and set DevicePasswordLessBuildVersion=0 so the password sign-in tile shows.
+                        Update (its four services stopped - wuauserv/UsoSvc also disabled; WaaSMedicSvc and DoSvc
+                        are protected and can only be stopped, and Medic re-enables wuauserv - so the two policy
+                        values in $VmPolicies do the real blocking: NoAutoUpdate=1 (no automatic OS updates) and
+                        the Store's AutoDownload=2 (no app auto-updates); Defender signatures still update); and
+                        set DevicePasswordLessBuildVersion=0 so the password sign-in tile shows.
       * Hardware boot-> RESTORE exactly what was saved, so the next real boot has the lights, HASS.Agent, Zebar
                         and all autostarts back.
       * Unsure (can't read the marker) -> do NOTHING and log loudly (never make the hardware worse).
 
     It never touches the Windows Hello PIN (owner rule T10) and never runs Windows Update.
-    Idempotent. State + log live in C:\ProgramData\jxn-vm\.
+    Idempotent. State + log live in C:\ProgramData\jxn-vm\. The log says what HAPPENED (a protected service is logged
+    as 'stopped only', never as disabled). Policy round-trip, for real: test-guard-policies.ps1 (beside this file).
 
     Usage:  guard.ps1 [-Mode auto|vm|hardware|status] [-Quiet]
             auto (default) = detect and act.  vm/hardware = force.  status = print one line and exit.
@@ -38,6 +43,14 @@ $UserHiveMnt = 'HKU\jxn-vm-user'                         # temp mount for the ow
 # Services kept running even in VM mode: SSH, remote mgmt, firewall, security.
 $KeepServices = @('sshd','ssh-agent','Tailscale','WinDefend','WdNisSvc','SecurityHealthService','MDCoreSvc','mpssvc','BFE','CoworkVMService')
 $WUServices   = @('wuauserv','UsoSvc','WaaSMedicSvc','DoSvc')
+# Policy values set in VM mode and put back on the hardware restore - the ONE place for them (plan, apply and restore
+# all walk this table). Why the Store one: WaaSMedicSvc and DoSvc are protected (the service manager refuses to
+# disable them), Medic puts wuauserv back, and on 2026-10-11 22:10 the Store pulled 20 app updates inside the VM ten
+# minutes after boot. NoAutoUpdate still blocks OS updates; Defender's signature updates stay on (by design).
+$VmPolicies = [ordered]@{
+  NoAutoUpdate      = @{ key='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'; name='NoAutoUpdate'; vm=1 }
+  StoreAutoDownload = @{ key='HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore'; name='AutoDownload'; vm=2 }
+}
 $RunKeys = @{ runHKLM   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
               runHKLM32 = 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run' }
 $StartupDirs = @{ user   = (Join-Path $ProfilePath 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup')
@@ -105,6 +118,37 @@ function Is-Microsoft([string]$imgPath){
 function Binpath([string]$pathName){ (($pathName -replace '^"','') -replace '".*$','') -replace '\s+-.*$','' -replace '\s+/.*$','' }
 
 # =========================================================================================================
+# The current value of a policy as {had, value} (had=$false: the value does not exist).
+function Read-Policy($p){
+  $v = if(Test-Path $p.key){ (Get-ItemProperty -Path $p.key -Name $p.name -ErrorAction SilentlyContinue).($p.name) } else { $null }
+  return [pscustomobject]@{ had = ($null -ne $v); value = $v }
+}
+function Set-VmPolicy([string]$id){
+  $p = $VmPolicies[$id]; New-Item -Path $p.key -Force | Out-Null
+  New-ItemProperty -Path $p.key -Name $p.name -PropertyType DWord -Value $p.vm -Force | Out-Null
+  Log "policy $id : $($p.name)=$($p.vm)"
+}
+# The original {had, value} saved for policy $id, from either state shape: state.policies (this guard) or the
+# NoAutoUpdate_prev that guards before 2026-10-12 wrote into state.wu. $null = nothing saved.
+function Saved-Policy($state, [string]$id){
+  if($state.PSObject.Properties.Name -contains 'policies' -and $state.policies.PSObject.Properties.Name -contains $id){ return $state.policies.$id }
+  if($id -eq 'NoAutoUpdate' -and $state.wu.PSObject.Properties.Name -contains 'NoAutoUpdate_prev'){
+    return [pscustomobject]@{ had = ($null -ne $state.wu.NoAutoUpdate_prev); value = $state.wu.NoAutoUpdate_prev }
+  }
+  return $null
+}
+# A state.json written by an older guard has no original for a policy added since: capture it NOW, before Apply
+# changes anything, and save it - the same SAVE-before-change rule as the first VM boot.
+function Ensure-PolicyState($state){
+  if($state.PSObject.Properties.Name -notcontains 'policies'){ $state | Add-Member -NotePropertyName policies -NotePropertyValue ([pscustomobject]@{}) }
+  $added = @()
+  foreach($id in $VmPolicies.Keys){
+    if($null -ne (Saved-Policy $state $id)){ continue }
+    $state.policies | Add-Member -NotePropertyName $id -NotePropertyValue (Read-Policy $VmPolicies[$id]); $added += $id
+  }
+  if($added){ $state | ConvertTo-Json -Depth 6 | Set-Content -Path $StateFile -Encoding UTF8; Log "state.json: saved the original of $($added -join ', ')" }
+}
+
 function Plan-Suppress {
   # READ-ONLY: build the full plan of what to change. No changes here.
   $state = [ordered]@{ mode='vm'; appliedAt=(Get-Date -Format o); tasks=@(); services=@{};
@@ -128,8 +172,7 @@ function Plan-Suppress {
   }
   # Windows Update services + policy
   foreach($n in $WUServices){ $svc=Get-CimInstance Win32_Service -Filter "Name='$n'" -ErrorAction SilentlyContinue; if($svc){ $state.wu[$n]="$($svc.StartMode)" } }
-  $au='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-  $state.wu['NoAutoUpdate_prev'] = if(Test-Path $au){ (Get-ItemProperty -Path $au -Name NoAutoUpdate -ErrorAction SilentlyContinue).NoAutoUpdate } else { $null }
+  $state.policies = [ordered]@{}; foreach($id in $VmPolicies.Keys){ $state.policies[$id] = Read-Policy $VmPolicies[$id] }
   # passwordless
   $pl='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
   if(Test-Path $pl){ $state.passwordless = (Get-ItemProperty -Path $pl -Name DevicePasswordLessBuildVersion -ErrorAction SilentlyContinue).DevicePasswordLessBuildVersion }
@@ -154,9 +197,10 @@ function Apply-Suppress($state){
   foreach($k in $StartupDirs.Keys){ Move-StartupAway $StartupDirs[$k] $k }
   # Windows Update
   foreach($p in $state.wu.PSObject.Properties){ $n=$p.Name; if($n -eq 'NoAutoUpdate_prev'){continue}
-    try { Set-Service -Name $n -StartupType Disabled -ErrorAction SilentlyContinue; Stop-Quiet $n; Log "WU stopped: $n" } catch {} }
-  $au='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'; New-Item -Path $au -Force | Out-Null
-  New-ItemProperty -Path $au -Name NoAutoUpdate -PropertyType DWord -Value 1 -Force | Out-Null
+    try { Set-Service -Name $n -StartupType Disabled -ErrorAction Stop; $how = 'disabled + stopped' } catch { $how = 'stopped only (protected - Windows refuses to disable it)' }
+    Stop-Quiet $n; Log "WU $how : $n" }
+  Ensure-PolicyState $state
+  foreach($id in $VmPolicies.Keys){ Set-VmPolicy $id }
   # passwordless 2 -> 0
   if($state.passwordless -ne $null){
     Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' -Name DevicePasswordLessBuildVersion -Value 0 -Type DWord
@@ -216,10 +260,12 @@ function Restore {
     try { Set-Service -Name $n -StartupType (Norm $state.services.$n) -ErrorAction Stop; Log "service restored: $n -> $($state.services.$n)" } catch { Log "WARN restore svc $n : $($_.Exception.Message)" }
   }
   foreach($n in $state.wu.PSObject.Properties.Name){ if($n -eq 'NoAutoUpdate_prev'){continue}
-    try { Set-Service -Name $n -StartupType (Norm $state.wu.$n) -ErrorAction SilentlyContinue; Log "WU restored: $n -> $($state.wu.$n)" } catch {} }
-  $au='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-  if($null -eq $state.wu.NoAutoUpdate_prev){ Remove-ItemProperty -Path $au -Name NoAutoUpdate -ErrorAction SilentlyContinue }
-  else { Set-ItemProperty -Path $au -Name NoAutoUpdate -Value $state.wu.NoAutoUpdate_prev -Type DWord }
+    try { Set-Service -Name $n -StartupType (Norm $state.wu.$n) -ErrorAction Stop; Log "WU restored: $n -> $($state.wu.$n)" }
+    catch { Log "WU $n left as is (protected; it was never disabled): wanted $($state.wu.$n)" } }
+  foreach($id in $VmPolicies.Keys){ $p = $VmPolicies[$id]; $o = Saved-Policy $state $id
+    if($null -eq $o){ Log "WARN policy $id : no saved original - left as is"; continue }
+    if($o.had){ New-Item -Path $p.key -Force | Out-Null; New-ItemProperty -Path $p.key -Name $p.name -PropertyType DWord -Value $o.value -Force | Out-Null; Log "policy restored: $id -> $($o.value)" }
+    else { Remove-ItemProperty -Path $p.key -Name $p.name -ErrorAction SilentlyContinue; Log "policy restored: $id -> (absent)" } }
   if($state.passwordless -ne $null){
     Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' -Name DevicePasswordLessBuildVersion -Value $state.passwordless -Type DWord
     Log "DevicePasswordLessBuildVersion restored -> $($state.passwordless)"

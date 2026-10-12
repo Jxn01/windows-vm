@@ -60,3 +60,45 @@ class GuardKnowsWhoseProfile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuardPolicyValuesRoundTrip(unittest.TestCase):
+    """2026-10-11 22:10, a VM boot: WaaSMedicSvc (protected - the service manager refuses to disable it, and DoSvc too)
+    had put wuauserv back, and the Microsoft Store pulled 20 app updates inside the VM ten minutes after boot - while
+    the guard's log said "WU stopped" for all four services. Every policy value the guard sets in VM mode now lives in
+    ONE table ($VmPolicies) that plan, apply and restore all walk, so a new one cannot be set without being restored."""
+
+    def test_store_auto_download_is_a_vm_policy(self):
+        self.assertRegex(GUARD, r"StoreAutoDownload\s*=\s*@\{[^}]*Policies\\Microsoft\\WindowsStore'[^}]*'AutoDownload'[^}]*vm\s*=\s*2")
+
+    def test_no_auto_update_is_a_vm_policy(self):
+        self.assertRegex(GUARD, r"NoAutoUpdate\s*=\s*@\{[^}]*WindowsUpdate\\AU'[^}]*'NoAutoUpdate'[^}]*vm\s*=\s*1")
+
+    def test_plan_apply_restore_walk_the_table(self):
+        for fn in ("Plan-Suppress", "Apply-Suppress", "Restore"):
+            self.assertIn("$VmPolicies", function_body(GUARD, fn), fn)
+
+    def test_no_policy_value_written_by_hand(self):
+        # a New-/Set-/Remove-ItemProperty naming one of the table's values outside the table is the one-off this
+        # replaced (the old guard wrote and restored NoAutoUpdate by hand)
+        names = re.findall(r"name\s*=\s*'(\w+)'\s*;\s*vm\s*=", GUARD)
+        self.assertIn("NoAutoUpdate", names)
+        hand = [l.strip() for l in GUARD.splitlines()
+                if re.search(r"(New|Set|Remove)-ItemProperty\b.*-Name\s+'?(%s)\b" % "|".join(names), l)]
+        self.assertEqual(hand, [])
+
+    def test_a_state_file_from_an_older_guard_gets_the_original_saved_first(self):
+        body = function_body(GUARD, "Apply-Suppress")
+        self.assertIn("Ensure-PolicyState $state", body)
+        self.assertLess(body.index("Ensure-PolicyState $state"), body.index("Set-VmPolicy"))
+        self.assertIn("ConvertTo-Json", function_body(GUARD, "Ensure-PolicyState"))   # persisted before any change
+
+    def test_restore_reads_the_old_state_shape_too(self):
+        self.assertIn("NoAutoUpdate_prev", function_body(GUARD, "Saved-Policy"))
+
+
+class GuardLogsWhatActuallyHappened(unittest.TestCase):
+    def test_no_set_service_with_silenced_errors(self):
+        # `Set-Service ... -ErrorAction SilentlyContinue; Log "... stopped"` logged success for services Windows refuses
+        silenced = [l.strip() for l in GUARD.splitlines() if "Set-Service" in l and "SilentlyContinue" in l]
+        self.assertEqual(silenced, [])
