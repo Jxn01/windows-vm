@@ -102,3 +102,34 @@ class GuardLogsWhatActuallyHappened(unittest.TestCase):
         # `Set-Service ... -ErrorAction SilentlyContinue; Log "... stopped"` logged success for services Windows refuses
         silenced = [l.strip() for l in GUARD.splitlines() if "Set-Service" in l and "SilentlyContinue" in l]
         self.assertEqual(silenced, [])
+
+
+class GuardNeverRecreatesARegistryKey(unittest.TestCase):
+    """2026-10-15: the rig's Run entries (Steam, Discord, Spotify, Everything, HASS.Agent, ...) were DESTROYED. In the
+    registry provider `New-Item -Path <existing key> -Force` deletes the key's values and subkeys and recreates it
+    empty. The guard did that to its park key (`New-Item -Path $RunPark -Force`) on every VM boot, so the second VM
+    boot in a row (10-09 12:47) wiped what the first (12:27) had parked; it also recreated the policy keys (losing
+    their other values) and the LIVE Run key on the hardware restore. Every registry key is now created only when
+    missing (Ensure-Key)."""
+
+    def test_no_forced_registry_new_item(self):
+        for name, src in (("guard.ps1", GUARD), ("install-guard.ps1", INSTALL)):
+            bad = [l.strip() for l in src.splitlines()
+                   if not l.strip().startswith("#")
+                   and re.search(r"\bNew-Item\b", l) and re.search(r"-Force\b", l)
+                   and not re.search(r"-ItemType\s+Directory", l, re.I) and "Test-Path" not in l]
+            self.assertEqual(bad, [], name)
+
+    def test_positive_control_old_line_is_caught(self):
+        l = "  New-Item -Path $RunPark -Force | Out-Null"
+        self.assertTrue(re.search(r"\bNew-Item\b", l) and re.search(r"-Force\b", l) and "Test-Path" not in l)
+
+    def test_ensure_key_exists_and_is_used(self):
+        self.assertIn("function Ensure-Key", GUARD)
+        for fn in ("Move-RunAway", "Restore-RunKey", "Set-VmPolicy"):
+            self.assertIn("Ensure-Key", function_body(GUARD, fn), fn)
+
+    def test_harness_covers_parking_twice(self):
+        harness = (GUEST / "test-guard-policies.ps1").read_text()
+        self.assertIn("Move-RunAway", harness)
+        self.assertIn("Restore-RunKey", harness)

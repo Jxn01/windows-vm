@@ -118,13 +118,18 @@ function Is-Microsoft([string]$imgPath){
 function Binpath([string]$pathName){ (($pathName -replace '^"','') -replace '".*$','') -replace '\s+-.*$','' -replace '\s+/.*$','' }
 
 # =========================================================================================================
+# Create a registry key ONLY if it is missing. NEVER `New-Item -Path <key> -Force` on a key that may exist: the registry
+# provider then deletes all its values and subkeys and recreates it empty. That destroyed the rig's parked Run entries
+# (2026-10-09 12:47, the second VM boot in a row) - tests/test_guard_static.py forbids the forced form.
+function Ensure-Key([string]$k){ if(-not (Test-Path -LiteralPath $k)){ New-Item -Path $k -Force | Out-Null } }
+
 # The current value of a policy as {had, value} (had=$false: the value does not exist).
 function Read-Policy($p){
   $v = if(Test-Path $p.key){ (Get-ItemProperty -Path $p.key -Name $p.name -ErrorAction SilentlyContinue).($p.name) } else { $null }
   return [pscustomobject]@{ had = ($null -ne $v); value = $v }
 }
 function Set-VmPolicy([string]$id){
-  $p = $VmPolicies[$id]; New-Item -Path $p.key -Force | Out-Null
+  $p = $VmPolicies[$id]; Ensure-Key $p.key
   New-ItemProperty -Path $p.key -Name $p.name -PropertyType DWord -Value $p.vm -Force | Out-Null
   Log "policy $id : $($p.name)=$($p.vm)"
 }
@@ -190,7 +195,7 @@ function Apply-Suppress($state){
           Log "service disabled: $n (was $($p.Value))" } catch { Log "WARN service $n : $($_.Exception.Message)" }
   }
   # Run: park each value in the registry, then remove from Run
-  New-Item -Path $RunPark -Force | Out-Null
+  Ensure-Key $RunPark
   foreach($k in $RunKeys.Keys){ Move-RunAway $RunKeys[$k] $k }
   With-UserHive { param($pfx) if($pfx){ Move-RunAway "Registry::$pfx\Software\Microsoft\Windows\CurrentVersion\Run" 'runUser' } }
   # Startup folder .lnks -> park on disk
@@ -224,7 +229,7 @@ function Ensure-SshRule {
 
 function Move-RunAway([string]$runKey,[string]$label){
   if(-not (Test-Path $runKey)){ return }
-  $park = Join-Path $RunPark $label; New-Item -Path $park -Force | Out-Null
+  $park = Join-Path $RunPark $label; Ensure-Key $park
   foreach($p in (Get-ItemProperty -Path $runKey).PSObject.Properties){
     if($p.Name -like 'PS*'){ continue }
     $kind = (Get-Item $runKey).GetValueKind($p.Name)
@@ -264,7 +269,7 @@ function Restore {
     catch { Log "WU $n left as is (protected; it was never disabled): wanted $($state.wu.$n)" } }
   foreach($id in $VmPolicies.Keys){ $p = $VmPolicies[$id]; $o = Saved-Policy $state $id
     if($null -eq $o){ Log "WARN policy $id : no saved original - left as is"; continue }
-    if($o.had){ New-Item -Path $p.key -Force | Out-Null; New-ItemProperty -Path $p.key -Name $p.name -PropertyType DWord -Value $o.value -Force | Out-Null; Log "policy restored: $id -> $($o.value)" }
+    if($o.had){ Ensure-Key $p.key; New-ItemProperty -Path $p.key -Name $p.name -PropertyType DWord -Value $o.value -Force | Out-Null; Log "policy restored: $id -> $($o.value)" }
     else { Remove-ItemProperty -Path $p.key -Name $p.name -ErrorAction SilentlyContinue; Log "policy restored: $id -> (absent)" } }
   if($state.passwordless -ne $null){
     Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' -Name DevicePasswordLessBuildVersion -Value $state.passwordless -Type DWord
@@ -332,7 +337,7 @@ function Restore-Parked {
   Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue
 }
 function Restore-RunKey([string]$runKey,[string]$park,[string]$label){
-  New-Item -Path $runKey -Force | Out-Null
+  Ensure-Key $runKey
   foreach($p in (Get-ItemProperty -Path $park).PSObject.Properties){
     if($p.Name -like 'PS*'){ continue }
     $kind=(Get-Item $park).GetValueKind($p.Name)

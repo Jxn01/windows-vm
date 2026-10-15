@@ -3,13 +3,15 @@
     and a temp state file, never the real policies or C:\ProgramData\jxn-vm. Exit 0 = all PASS.
       powershell -NoProfile -ExecutionPolicy Bypass -File test-guard-policies.ps1 [-Guard <path to guard.ps1>]
     Covers both state.json shapes: one written by a guard before 2026-10-12 (NoAutoUpdate_prev in .wu, no .policies)
-    and the current one (.policies). The Linux suite checks the same code statically (tests/test_guard_static.py).
+    and the current one (.policies); that setting a policy keeps the key's OTHER values; and Run parking across two VM
+    boots in a row + a hardware restore into a Run key that already has values (2026-10-15: the old guard's
+    `New-Item -Force` wiped the parked Run entries on the second VM boot). The Linux suite checks the same code statically (tests/test_guard_static.py).
 #>
 param([string]$Guard = (Join-Path $PSScriptRoot 'guard.ps1'))
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Guard, [ref]$null, [ref]$null)
 $fns = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-foreach ($fn in $fns) { if ($fn.Name -in 'Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState') { . ([scriptblock]::Create($fn.Extent.Text)) } }
+foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey') { . ([scriptblock]::Create($fn.Extent.Text)) } }
 $restoreFn = $fns | Where-Object Name -eq 'Restore'
 $restoreLoop = $restoreFn.Body.FindAll({ $args[0] -is [System.Management.Automation.Language.ForEachStatementAst] -and $args[0].Extent.Text -match 'Saved-Policy' }, $true) | Select-Object -First 1
 function Log($m) { $script:log += , $m }
@@ -46,5 +48,28 @@ Check 'B: a complete state is not rewritten on re-apply' ((Get-Item $StateFile).
 . ([scriptblock]::Create($restoreLoop.Extent.Text))
 Check 'B: NoAutoUpdate restored to its original 0' ((Get-ItemProperty "$base\AU").NoAutoUpdate -eq 0)
 Check 'B: AutoDownload removed again (it was absent)' ($null -eq (Get-ItemProperty "$base\Store" -Name AutoDownload -ErrorAction SilentlyContinue))
+# C. setting a policy keeps the key's OTHER values (the old Set-VmPolicy recreated the key empty)
+Remove-Item $base -Recurse -Force; New-Item $base | Out-Null; New-Item "$base\AU" | Out-Null; New-ItemProperty "$base\AU" -Name AUOptions -Value 3 -PropertyType DWord | Out-Null
+foreach ($id in $VmPolicies.Keys) { Set-VmPolicy $id }
+Check 'C: Set-VmPolicy kept a sibling value (AUOptions=3)' ((Get-ItemProperty "$base\AU").AUOptions -eq 3)
+
+# D. Run parking: VM boot, VM boot again, hardware restore into a Run key that gained a value meanwhile
+$RunPark = "$base\park"; $run = "$base\Run"; $script:RestoredLaunch = New-Object System.Collections.Generic.List[string]
+New-Item $run | Out-Null
+New-ItemProperty $run -Name Steam -Value '"C:\Steam\steam.exe" -silent' -PropertyType String | Out-Null
+New-ItemProperty $run -Name Spotify -Value '%APPDATA%\Spotify\Spotify.exe /minimized' -PropertyType ExpandString | Out-Null
+Ensure-Key $RunPark; Move-RunAway $run 'runUser'                       # 1st VM boot
+Check 'D: 1st VM boot parked both values and emptied Run' ((@((Get-Item "$RunPark\runUser").GetValueNames()).Count -eq 2) -and (@((Get-Item $run).GetValueNames()).Count -eq 0))
+Ensure-Key $RunPark; Move-RunAway $run 'runUser'                       # 2nd VM boot in a row: Run is empty now
+$names = @((Get-Item "$RunPark\runUser").GetValueNames())
+Check 'D: 2nd VM boot in a row kept the parked values (the 2026-10-09 loss)' (($names -contains 'Steam') -and ($names -contains 'Spotify'))
+Check 'D: the value KIND survives parking (ExpandString)' ((Get-Item "$RunPark\runUser").GetValueKind('Spotify') -eq 'ExpandString')
+New-ItemProperty $run -Name OneDrive -Value 'C:\od.exe' -PropertyType String | Out-Null   # added while parked
+Restore-RunKey $run "$RunPark\runUser" 'runUser'                      # hardware restore
+$live = @((Get-Item $run).GetValueNames())
+Check 'D: restore put Steam + Spotify back' (($live -contains 'Steam') -and ($live -contains 'Spotify'))
+Check 'D: restore kept a value already in the live Run key' ($live -contains 'OneDrive')
+Check 'D: restored value text is exact' ((Get-Item $run).GetValue('Steam') -eq '"C:\Steam\steam.exe" -silent')
+
 Remove-Item $base -Recurse -Force; Remove-Item $StateFile -Force
 if ($script:failed) { "$($script:failed) FAILED"; exit 1 } else { "all PASS" }
