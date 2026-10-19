@@ -156,7 +156,7 @@ tear down the disk · `bcd.py` patch the private BCD (hivex) · `probe.py` what 
 
 `cd tests && python3 -m unittest discover` — 140 tests: GPT/layout/dm table, every pre-flight refusal, the XML
 audit, the ESP builder, NTFS parsing, BCD flags, the guest guard's static invariants (`test_guard_static.py`: no
-forced registry `New-Item`, no `Move-Item` or ACL write outside their primitives, the policy table, the late start) — each with a positive control.
+forced registry `New-Item`, no `Move-Item` or ACL write outside their primitives, the policy table, the late start) — each with a positive control. (`Test-SafeDir` refuses reparse-point Startup folders, closing the *static* junction vector; a timed junction swap during the pre-logon restore is a residual race that needs an enabled non-admin account to exploit — none on the rig/laptop — acknowledged and recorded in KB 11-windows.md T33, where the registry-only redesign that would remove the class is proposed.)
 The root end-to-end test on a synthetic disk with the real geometry: `sudo python3 -I tests/root_integration.py`.
 On Windows (PowerShell 5.1, no elevation, scratch keys and a scratch folder under `%TEMP%` only), the guard's own
 functions for real: policy save/apply/restore for both state.json shapes (A–C), Run parking across two VM boots (D),

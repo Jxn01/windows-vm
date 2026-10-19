@@ -143,7 +143,14 @@ class GuardMovedFilesTakeTheirFoldersPermissions(unittest.TestCase):
     owner's unelevated Explorer, which skipped them silently. (wtq and the AHK shortcuts carry an explicit owner ACE.)
     Now Secure-Root writes only when the ACL is wrong, and Unpark-File grants the folder's file permissions while the
     shortcut is still in the park. SYSTEM never writes an ACL inside a Startup folder (user-writable: a planted hard link
-    or symlink would aim the write elsewhere - the first fix's in-place repair did exactly that, found by review)."""
+    or symlink would aim the write elsewhere - the first fix's in-place repair did exactly that, found by review).
+    Test-SafeDir refuses any Startup path with a reparse-point component (park source and restore destination), closing
+    the STATIC junction vector. RESIDUAL, acknowledged not fixed: Test-SafeDir is check-then-use by path, so a
+    sufficiently-timed junction swap during the pre-logon restore is still a race no re-check closes - it needs an
+    ENABLED non-admin account running code in that window. Measured on the rig 2026-10-19: every enabled account (jxn,
+    Vendeg) is an Administrator, so there is no principal to escalate; the laptop/future PCs are the reason it is recorded.
+    The class-killer (proposed to the owner, not built) is StartupApproved registry bytes instead of moving .lnk files -
+    no path, no TOCTOU, no ACL write. See KB 11-windows.md T33 / plan record 14."""
 
     MOVE = re.compile(r"\bMove-Item\b")
     ACL_WRITE = re.compile(r"\b(Set-Acl|SetAccessControl|icacls)\b", re.I)
