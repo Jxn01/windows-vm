@@ -78,7 +78,7 @@ function Secure-Root([string]$path){
   Set-Acl -Path $path -AclObject $acl
   return $true
 }
-$RootRewritten = $null; try { $RootRewritten = Secure-Root $Root } catch { }
+$RootRewritten = $null; try { $RootRewritten = Secure-Root $Root } catch { $RootRewritten = "failed: $($_.Exception.Message)" }   # logged below
 
 function Log([string]$m){
   $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
@@ -244,8 +244,21 @@ function Move-RunAway([string]$runKey,[string]$label){
     Log "Run moved aside [$label]: $($p.Name)"
   }
 }
+# A Startup folder lives under the owner's own profile, so the owner (unelevated) can replace it - or any component of
+# its path - with a junction/symlink. A SYSTEM move INTO such a folder, or a SYSTEM enumerate-and-move OUT of it, then
+# lands on whatever the reparse point names: arbitrary file write / move as SYSTEM (LPE). Test-SafeDir refuses unless the
+# folder exists AND no component from the volume root down is a reparse point. The park itself is under $Root (Secure-Root:
+# SYSTEM+Administrators only, protected, no inheritance), where the owner cannot create a reparse point, so it is trusted.
+function Test-SafeDir([string]$path){
+  try {
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if($item.PSProvider.Name -ne 'FileSystem' -or -not $item.PSIsContainer){ return $false }
+    for($cur=$item; $cur; $cur=$cur.Parent){ if($cur.Attributes -band [System.IO.FileAttributes]::ReparsePoint){ return $false } }
+    return $true
+  } catch { return $false }
+}
 function Move-StartupAway([string]$dir,[string]$label){
-  if(-not (Test-Path $dir)){ return }
+  if(-not (Test-SafeDir $dir)){ if(Test-Path $dir){ Log "WARN startup park [$label]: $dir is a reparse point - skipped" }; return }
   $park = Join-Path $StartupPark $label; New-Item -ItemType Directory -Force -Path $park | Out-Null
   foreach($f in Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue){
     if($f.Name -ieq 'desktop.ini'){ continue }
@@ -262,9 +275,12 @@ function Move-StartupAway([string]$dir,[string]$label){
 # Shortcuts with an EXPLICIT owner ACE (wtq, the AHK scripts) survived - which is why only some went missing.
 # So Unpark-File gives a shortcut its Startup folder's file permissions (as explicit ACEs) while it is still in the park,
 # then renames it back. SYSTEM never writes a DACL inside a Startup folder: the owner can write there unelevated, and a
-# hard link or symlink planted there would aim a SYSTEM ACL write at a file of their choosing. In the park (users cannot
-# create or swap entries) only an entry that is neither a reparse point nor hard-linked is touched. tests/test_guard_static.py
-# forbids a Move-Item outside Park-File / Unpark-File and any ACL write outside Secure-Root / Unpark-File.
+# hard link or symlink planted there would aim a SYSTEM ACL write at a file of their choosing. The ACL write is on the
+# park copy, which the owner cannot even traverse to (the park dir denies them), so it cannot be swapped under us (no
+# TOCTOU); only an entry that is neither a reparse point nor hard-linked is touched. The destination folder is checked
+# reparse-free by the caller (Test-SafeDir) and the destination name is refused if it is itself a reparse point.
+# tests/test_guard_static.py forbids a Move-Item outside Park-File / Unpark-File and any ACL write outside
+# Secure-Root / Unpark-File, and requires the Test-SafeDir gate on both park and restore.
 function Park-File([string]$from,[string]$to){ Move-Item -LiteralPath $from -Destination $to -Force }   # a rename: the file is not changed
 function Link-Count([string]$path){
   # How many names the file has (fsutil lists them, one per line). -1 = could not tell, which counts as unsafe.
@@ -293,9 +309,12 @@ function Folder-FileRules([string]$folder){
   return $out
 }
 function Unpark-File([string]$from,[string]$toDir){
-  # Grant the folder's file permissions IN THE PARK, then rename into $toDir. Returns the restored path.
+  # Grant $toDir's file permissions to the park copy, then rename it into $toDir. $toDir was already checked reparse-free
+  # by the caller. Returns the restored path, or $null if it refused (the shortcut then stays in the park).
   $fi = Get-Item -LiteralPath $from -Force
   $to = Join-Path $toDir $fi.Name
+  if((Test-Path -LiteralPath $to) -and ((Get-Item -LiteralPath $to -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)){
+    Log "WARN unpark $($fi.Name): the destination name is a reparse point - kept in the park"; return $null }
   if($fi.Attributes -band [System.IO.FileAttributes]::ReparsePoint){ Log "WARN unpark $($fi.Name): a reparse point - restored without new permissions" }
   elseif((Link-Count $from) -ne 1){ Log "WARN unpark $($fi.Name): hard-linked (or its link count is unreadable) - restored without new permissions" }
   else {
@@ -387,13 +406,18 @@ function Restore-Parked {
   }
   $uPark = Join-Path $RunPark 'runUser'
   if(Test-Path $uPark){ With-UserHive { param($pfx) if($pfx){ Restore-RunKey "Registry::$pfx\Software\Microsoft\Windows\CurrentVersion\Run" $uPark 'runUser' } } }
-  # Startup .lnks from the disk park
+  # Startup .lnks from the disk park. A label whose destination is unsafe (a reparse point) is left in the park untouched,
+  # never redirected; its park subdir is removed only once its shortcuts are actually restored.
   foreach($k in $StartupDirs.Keys){
     $park = Join-Path $StartupPark $k
-    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Unpark-File $f.FullName $StartupDirs[$k]; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
+    if(-not (Test-Path $park)){ continue }
+    $dest = $StartupDirs[$k]
+    if(-not (Test-SafeDir $dest)){ Log "WARN startup restore [$k]: $dest is missing or a reparse point - $(@(Get-ChildItem $park -File).Count) shortcut(s) kept in the park"; continue }
+    foreach($f in Get-ChildItem $park -File){ $to = Unpark-File $f.FullName $dest; if($to){ $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
+    Remove-Item -Path $park -Recurse -Force -ErrorAction SilentlyContinue
   }
   Remove-Item -Path $RunPark -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue
+  if((Test-Path $StartupPark) -and -not (Get-ChildItem $StartupPark -Recurse -File -ErrorAction SilentlyContinue)){ Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue }
 }
 function Restore-RunKey([string]$runKey,[string]$park,[string]$label){
   Ensure-Key $runKey
@@ -413,7 +437,9 @@ if($Mode -eq 'status'){
 }
 $kind = if($Mode -eq 'auto'){ Get-BootKind } else { $Mode }
 Log "guard start: Mode=$Mode kind=$kind"
-if($RootRewritten){ Log "Secure-Root: $Root was not locked - ACL rewritten (this propagates onto the park)" }
+if($RootRewritten -is [string]){ Log "WARN Secure-Root $RootRewritten" }
+elseif($RootRewritten){ Log "Secure-Root: $Root was not locked - ACL rewritten (this propagates onto the park)" }
+else { Log "Secure-Root: $Root already locked (unchanged)" }
 # PreventDeviceEncryption=1 (D3/T4): permanent, both hardware and VM. Stops Windows auto-encrypting C: on the
 # hardware (which would break the whole VM scheme and Garuda reading C:). Needs SYSTEM - works from the boot task.
 try {

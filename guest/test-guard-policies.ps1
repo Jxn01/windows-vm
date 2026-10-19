@@ -13,7 +13,7 @@ param([string]$Guard = (Join-Path $PSScriptRoot 'guard.ps1'))
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Guard, [ref]$null, [ref]$null)
 $fns = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey','Park-File','Link-Count','File-Rights','Folder-FileRules','Unpark-File','Move-StartupAway','Restore-Parked') { . ([scriptblock]::Create($fn.Extent.Text)) } }
+foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey','Park-File','Link-Count','File-Rights','Folder-FileRules','Test-SafeDir','Unpark-File','Move-StartupAway','Restore-Parked') { . ([scriptblock]::Create($fn.Extent.Text)) } }
 $restoreFn = $fns | Where-Object Name -eq 'Restore'
 $restoreLoop = $restoreFn.Body.FindAll({ $args[0] -is [System.Management.Automation.Language.ForEachStatementAst] -and $args[0].Extent.Text -match 'Saved-Policy' }, $true) | Select-Object -First 1
 function Log($m) { $script:log += , $m }
@@ -118,6 +118,22 @@ Check 'E: restored shortcut keeps inheritance on' (-not (Get-Acl -LiteralPath "$
 Check 'E: the hard-linked entry was restored but NO ACL was written through it' ((Test-Path "$liveDir\planted.lnk") -and ((Get-Acl -LiteralPath "$outside\target.txt").Sddl -eq $targetBefore) -and -not (Everyone-Reads "$outside\target.txt"))
 Check 'E: ...and the guard said so' ([bool](@($script:log | Where-Object { $_ -match 'WARN unpark planted\.lnk: hard-linked' })))
 Check 'E: the park is gone after the restore' (-not (Test-Path $StartupPark))
+# a junctioned Startup folder (the owner can plant one in their own profile): the restore must refuse and NOT move or
+# write anything through it, leaving the shortcut in the park. Also a junction as a mid-path component.
+$evil = "$tmp\evil-target"; New-Item -ItemType Directory -Force -Path $evil | Out-Null
+$jLive = "$tmp\startup-via-junction"; New-Item -ItemType Junction -Path $jLive -Target $evil | Out-Null
+$parent = "$tmp\parent"; New-Item -ItemType Directory -Force -Path "$parent\real" | Out-Null
+$jParent = "$tmp\via-junction-parent"; New-Item -ItemType Junction -Path $jParent -Target $parent | Out-Null
+Check 'E: Test-SafeDir accepts a real dir, rejects a junction and a junctioned parent' ((Test-SafeDir $liveDir) -and -not (Test-SafeDir $jLive) -and -not (Test-SafeDir "$jParent\real"))
+$StartupDirs = @{ user = $jLive }; $StartupPark = "$parkRoot\suppressed-startup2"; New-Item -ItemType Directory -Force -Path "$StartupPark\user" | Out-Null
+'z' | Set-Content "$StartupPark\user\redir.lnk"; $script:RestoredLaunch = New-Object System.Collections.Generic.List[string]
+$script:log = @(); Restore-Parked
+Check 'E: a junctioned Startup folder is refused - nothing written or moved through it' ((Test-Path "$StartupPark\user\redir.lnk") -and -not (Test-Path "$evil\redir.lnk"))
+Check 'E: ...and the refusal was logged, and the park was kept' (([bool](@($script:log | Where-Object { $_ -match 'startup restore \[user\]: .*reparse point' }))) -and (Test-Path $StartupPark))
+# the mirror on the PARK side: a junctioned source Startup folder must not have its target enumerated and moved out
+'secret' | Set-Content "$parent\real\do-not-move.txt"; $StartupPark = "$parkRoot\suppressed-startup3"
+$script:log = @(); Move-StartupAway "$jParent\real" 'user'
+Check 'E: parking refuses a junctioned source folder - the target is not enumerated/moved' ((Test-Path "$parent\real\do-not-move.txt") -and -not (Test-Path "$StartupPark\user\do-not-move.txt"))
 Remove-Item $tmp -Recurse -Force
 
 Remove-Item $base -Recurse -Force; Remove-Item $StateFile -Force

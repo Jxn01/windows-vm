@@ -193,9 +193,33 @@ class GuardMovedFilesTakeTheirFoldersPermissions(unittest.TestCase):
         self.assertIn("if($acl.Sddl -eq (Get-Acl -Path $path).Sddl){ return $false }", body)
         self.assertLess(body.index("return $false"), body.index("Set-Acl -Path $path -AclObject"))
 
+    def test_secure_root_outcome_is_always_logged(self):
+        # "no rewrite logged" must not also be what a crash looks like: a silent catch made the two identical
+        self.assertNotRegex(GUARD, r"Secure-Root \$Root \} catch \{\s*\}")
+        for msg in ("WARN Secure-Root", "ACL rewritten", "already locked (unchanged)"):
+            self.assertIn(msg, GUARD)
+
     def test_park_and_restore_use_the_primitives(self):
         self.assertIn("Park-File", function_body(GUARD, "Move-StartupAway"))
         self.assertIn("Unpark-File", function_body(GUARD, "Restore-Parked"))
+
+    def test_reparse_points_on_startup_folders_are_refused(self):
+        # A Startup folder is under the owner's profile: the owner can junction it (or a parent) to redirect a SYSTEM
+        # move/ACL write (LPE). Both the park source and the restore destination go through Test-SafeDir first.
+        body = function_body(GUARD, "Test-SafeDir")
+        self.assertIn("ReparsePoint", body)
+        self.assertIn("$cur.Parent", body)                             # every component, up to the volume root
+        self.assertIn("Test-SafeDir", function_body(GUARD, "Move-StartupAway"))
+        self.assertIn("Test-SafeDir", function_body(GUARD, "Restore-Parked"))
+        self.assertIn("ReparsePoint", function_body(GUARD, "Unpark-File"))   # the destination name itself
+
+    def test_a_refused_restore_keeps_the_park(self):
+        # Unpark-File returns $null on refusal and the park subdir is removed only after a real restore, so a refused
+        # label is not silently wiped by the end-of-restore cleanup.
+        body = function_body(GUARD, "Restore-Parked")
+        self.assertIn("if($to){", body)
+        self.assertNotRegex(body, r"Remove-Item -Path \$StartupPark -Recurse -Force -ErrorAction SilentlyContinue\s*\n\}")
+        self.assertIn("-not (Get-ChildItem $StartupPark -Recurse -File", body)
 
     def test_harness_exercises_the_round_trip_and_a_planted_link(self):
         harness = (GUEST / "test-guard-policies.ps1").read_text()
