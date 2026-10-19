@@ -154,12 +154,16 @@ tear down the disk · `bcd.py` patch the private BCD (hivex) · `probe.py` what 
 
 ## Tests
 
-`cd tests && python3 -m unittest discover` — 128 tests: GPT/layout/dm table, every pre-flight refusal, the XML
-audit, the ESP builder, NTFS parsing, BCD flags, the guest guard's static invariants (`test_guard_static.py`) —
-each with a positive control. The root end-to-end test on a synthetic disk with the real geometry:
-`sudo python3 -I tests/root_integration.py`. On Windows (PowerShell 5.1, no elevation, scratch keys only), the
-guard's policy save/apply/restore round-trip for both state.json shapes:
-`powershell -NoProfile -ExecutionPolicy Bypass -File guest\test-guard-policies.ps1` (exit 0 = all PASS).
+`cd tests && python3 -m unittest discover` — 135 tests: GPT/layout/dm table, every pre-flight refusal, the XML
+audit, the ESP builder, NTFS parsing, BCD flags, the guest guard's static invariants (`test_guard_static.py`: no
+forced registry `New-Item`, no bare `Move-Item`, the policy table, the late start) — each with a positive control.
+The root end-to-end test on a synthetic disk with the real geometry: `sudo python3 -I tests/root_integration.py`.
+On Windows (PowerShell 5.1, no elevation, scratch keys and a scratch folder under `%TEMP%` only), the guard's own
+functions for real: policy save/apply/restore for both state.json shapes (A–C), Run parking across two VM boots (D),
+and Startup shortcuts keeping their folder's permissions through park → re-secure → restore, plus the in-place
+repair (E — its control proves the harness can see the 2026-10-17 trap):
+`powershell -NoProfile -ExecutionPolicy Bypass -File guest\test-guard-policies.ps1 [-Guard <guard.ps1>]` (exit 0 =
+all PASS). `-Guard` points it at another copy, e.g. the installed `C:\ProgramData\jxn-vm\guard.ps1`.
 
 ## Known issue — the P2V boot blocker
 
