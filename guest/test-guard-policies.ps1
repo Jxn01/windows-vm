@@ -13,7 +13,7 @@ param([string]$Guard = (Join-Path $PSScriptRoot 'guard.ps1'))
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Guard, [ref]$null, [ref]$null)
 $fns = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey','Adopt-Inheritance','Move-Adopt','Move-StartupAway','Restore-Parked') { . ([scriptblock]::Create($fn.Extent.Text)) } }
+foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey','Park-File','Link-Count','File-Rights','Folder-FileRules','Unpark-File','Move-StartupAway','Restore-Parked') { . ([scriptblock]::Create($fn.Extent.Text)) } }
 $restoreFn = $fns | Where-Object Name -eq 'Restore'
 $restoreLoop = $restoreFn.Body.FindAll({ $args[0] -is [System.Management.Automation.Language.ForEachStatementAst] -and $args[0].Extent.Text -match 'Saved-Policy' }, $true) | Select-Object -First 1
 function Log($m) { $script:log += , $m }
@@ -80,7 +80,7 @@ Check 'D: restored value text is exact' ((Get-Item $run).GetValue('Steam') -eq '
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $every = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
 $users = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
-function Lock-Dir([string]$d, $readers) {   # protected DACL; re-applying it propagates down the tree, as Secure-Root does at every guard start
+function Lock-Dir([string]$d, $readers) {   # protected DACL; re-applying it propagates down the tree, as the old Secure-Root did at every guard start
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   $a = Get-Acl -LiteralPath $d; $a.SetAccessRuleProtection($true, $false)
   foreach ($r in @($a.Access)) { [void]$a.RemoveAccessRule($r) }
@@ -90,8 +90,8 @@ function Lock-Dir([string]$d, $readers) {   # protected DACL; re-applying it pro
 function Rules([string]$f, [bool]$explicit, [bool]$inherited) { @((Get-Acl -LiteralPath $f).GetAccessRules($explicit, $inherited, [System.Security.Principal.SecurityIdentifier])) }
 function Everyone-Reads([string]$f) { [bool](@(Rules $f $true $true | Where-Object { $_.IdentityReference -eq $every -and ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData) })) }
 $tmp = Join-Path $env:TEMP 'jxn-guard-acl-test'; Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-$liveDir = "$tmp\Startup"; $parkRoot = "$tmp\root"
-Lock-Dir $liveDir @($every); Lock-Dir $parkRoot @()
+$liveDir = "$tmp\Startup"; $parkRoot = "$tmp\root"; $outside = "$tmp\outside"
+Lock-Dir $liveDir @($every); Lock-Dir $parkRoot @(); Lock-Dir $outside @()
 # control: the bare round trip the old guard did. If this does not lose the ACE, the harness cannot see the trap.
 'x' | Set-Content "$liveDir\bare.lnk"
 Move-Item "$liveDir\bare.lnk" "$parkRoot\bare.lnk"; Lock-Dir $parkRoot @(); Move-Item "$parkRoot\bare.lnk" "$liveDir\bare.lnk"
@@ -102,23 +102,22 @@ $StartupDirs = @{ user = $liveDir }; $StartupPark = "$parkRoot\suppressed-startu
 $script:RestoredLaunch = New-Object System.Collections.Generic.List[string]
 'x' | Set-Content "$liveDir\zebar.exe.lnk"; 'x' | Set-Content "$liveDir\wtq.exe.lnk"
 $a = Get-Acl -LiteralPath "$liveDir\wtq.exe.lnk"; $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($users, 'Write', 'Allow'))); Set-Acl -LiteralPath "$liveDir\wtq.exe.lnk" -AclObject $a
+# a hard link planted in Startup that points at a file outside it: the restore must not write ACLs through it
+'secret' | Set-Content "$outside\target.txt"; New-Item -ItemType HardLink -Path "$liveDir\planted.lnk" -Target "$outside\target.txt" | Out-Null
 Check 'E: setup - a Startup file inherits the folder''s Everyone ACE' (Everyone-Reads "$liveDir\zebar.exe.lnk")
+Check 'E: setup - Link-Count sees 1 name for a plain file and 2 for the planted hard link' (((Link-Count "$liveDir\zebar.exe.lnk") -eq 1) -and ((Link-Count "$liveDir\planted.lnk") -eq 2))
 Move-StartupAway $liveDir 'user'                                       # VM boot
-Check 'E: VM boot parked the shortcut and it took the park''s permissions' ((Test-Path "$StartupPark\user\zebar.exe.lnk") -and -not (Everyone-Reads "$StartupPark\user\zebar.exe.lnk"))
-Lock-Dir $parkRoot @()                                                 # the next guard start re-secures its root
-Restore-Parked                                                         # hardware restore
-Check 'E: restored shortcut inherits the Startup folder''s permissions again' (Everyone-Reads "$liveDir\zebar.exe.lnk")
+Check 'E: VM boot parked the shortcuts' ((Test-Path "$StartupPark\user\zebar.exe.lnk") -and (Test-Path "$StartupPark\user\planted.lnk") -and -not (Test-Path "$liveDir\zebar.exe.lnk"))
+Lock-Dir $parkRoot @()                                                 # what the old guard start did: strip the parked files
+Check 'E: setup - the parked shortcut lost the Everyone ACE (the damaged state the rig is in)' (-not (Everyone-Reads "$StartupPark\user\zebar.exe.lnk"))
+$targetBefore = (Get-Acl -LiteralPath "$outside\target.txt").Sddl
+$script:log = @(); Restore-Parked                                      # hardware restore
+Check 'E: restored shortcut has the Startup folder''s permissions again' (Everyone-Reads "$liveDir\zebar.exe.lnk")
 Check 'E: an explicit ACE survives the round trip' ([bool](@(Rules "$liveDir\wtq.exe.lnk" $true $false | Where-Object { $_.IdentityReference -eq $users })))
 Check 'E: restored shortcut keeps inheritance on' (-not (Get-Acl -LiteralPath "$liveDir\zebar.exe.lnk").AreAccessRulesProtected)
-# a shortcut an OLDER guard already restored with the park's ACL is repaired in place on a hardware boot
-'x' | Set-Content "$parkRoot\old.lnk"; Move-Item "$parkRoot\old.lnk" "$liveDir\old.lnk"
-Check 'E: setup - the old guard''s restore left a shortcut unreadable to Everyone' (-not (Everyone-Reads "$liveDir\old.lnk"))
-$fixed = Adopt-Inheritance "$liveDir\old.lnk"
-Check 'E: Adopt-Inheritance repaired it and said so' ($fixed -and (Everyone-Reads "$liveDir\old.lnk"))
-Check 'E: Adopt-Inheritance on a healthy file changes nothing and says so' (-not (Adopt-Inheritance "$liveDir\old.lnk"))
-'x' | Set-Content "$liveDir\locked.lnk"; $a = Get-Acl -LiteralPath "$liveDir\locked.lnk"; $a.SetAccessRuleProtection($true, $false)
-$a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow'))); Set-Acl -LiteralPath "$liveDir\locked.lnk" -AclObject $a
-Check 'E: a deliberately protected DACL is left alone' ((-not (Adopt-Inheritance "$liveDir\locked.lnk")) -and -not (Everyone-Reads "$liveDir\locked.lnk"))
+Check 'E: the hard-linked entry was restored but NO ACL was written through it' ((Test-Path "$liveDir\planted.lnk") -and ((Get-Acl -LiteralPath "$outside\target.txt").Sddl -eq $targetBefore) -and -not (Everyone-Reads "$outside\target.txt"))
+Check 'E: ...and the guard said so' ([bool](@($script:log | Where-Object { $_ -match 'WARN unpark planted\.lnk: hard-linked' })))
+Check 'E: the park is gone after the restore' (-not (Test-Path $StartupPark))
 Remove-Item $tmp -Recurse -Force
 
 Remove-Item $base -Recurse -Force; Remove-Item $StateFile -Force

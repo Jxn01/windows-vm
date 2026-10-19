@@ -13,9 +13,9 @@
                         the Store's AutoDownload=2 (no app auto-updates); Defender signatures still update); and
                         set DevicePasswordLessBuildVersion=0 so the password sign-in tile shows.
       * Hardware boot-> RESTORE exactly what was saved, so the next real boot has the lights, HASS.Agent, Zebar
-                        and all autostarts back. A shortcut moved in or out of the park takes its new folder's
-                        permissions (Move-Adopt - else the owner's Explorer cannot read it), and every hardware boot
-                        re-inherits the Startup shortcuts an older guard restored with the park's ACL.
+                        and all autostarts back. A parked shortcut is given its Startup folder's file permissions
+                        while it is still in the park, before it goes back (Unpark-File - else the owner's
+                        Explorer cannot read it).
       * Unsure (can't read the marker) -> do NOTHING and log loudly (never make the hardware worse).
 
     It never touches the Windows Hello PIN (owner rule T10) and never runs Windows Update.
@@ -65,6 +65,8 @@ function Secure-Root([string]$path){
   New-Item -ItemType Directory -Force -Path $path | Out-Null
   $sys=[System.Security.Principal.SecurityIdentifier]'S-1-5-18'
   $adm=[System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
+  # Written ONLY when it is not already the locked ACL: every Set-Acl on a folder re-propagates down its tree, and
+  # doing that at every boot is what stripped the parked shortcuts' Startup permissions (2026-10-17). $true = rewritten.
   $acl = Get-Acl -Path $path
   $acl.SetAccessRuleProtection($true,$false)
   foreach($r in @($acl.Access)){ [void]$acl.RemoveAccessRule($r) }
@@ -72,9 +74,11 @@ function Secure-Root([string]$path){
   foreach($sid in @($sys,$adm)){
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
   }
+  if($acl.Sddl -eq (Get-Acl -Path $path).Sddl){ return $false }
   Set-Acl -Path $path -AclObject $acl
+  return $true
 }
-try { Secure-Root $Root } catch { }
+$RootRewritten = $null; try { $RootRewritten = Secure-Root $Root } catch { }
 
 function Log([string]$m){
   $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
@@ -245,43 +249,62 @@ function Move-StartupAway([string]$dir,[string]$label){
   $park = Join-Path $StartupPark $label; New-Item -ItemType Directory -Force -Path $park | Out-Null
   foreach($f in Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue){
     if($f.Name -ieq 'desktop.ini'){ continue }
-    Move-Adopt $f.FullName (Join-Path $park $f.Name)
+    Park-File $f.FullName (Join-Path $park $f.Name)
     Log "startup moved aside [$label]: $($f.Name)"
   }
 }
 
 # A same-volume Move-Item is a RENAME: the file keeps the security descriptor it had and never gets its new folder's
-# inherited permissions (Explorer adds those by hand; MoveFileEx does not). A parked .lnk sits in $Root, whose
-# SYSTEM+Administrators-only ACL Secure-Root re-propagates at every guard start, and the old restore carried exactly that
-# back into Startup: the owner's unelevated Explorer could not read zebar.exe.lnk / Tailscale.lnk / Brother iPSMonitor.lnk
-# and skipped them without a word (the rig's first hardware boot after the VM, 2026-10-17). Shortcuts with an EXPLICIT
-# owner ACE (wtq, the AHK scripts) survived - which is why only some went missing. Every file the guard moves goes through
-# Move-Adopt; tests/test_guard_static.py forbids a bare Move-Item.
-function Adopt-Inheritance([string]$path){
-  # Recompute $path's inherited ACEs from its CURRENT folder; explicit ACEs are kept. Only the DACL is written (never the
-  # owner), and a deliberately protected DACL (inheritance off) is left alone. $true = the permissions changed.
-  $acl = (Get-Item -LiteralPath $path -Force).GetAccessControl('Access')
-  if($acl.AreAccessRulesProtected){ return $false }
-  $before = $acl.GetSecurityDescriptorSddlForm('Access')
-  $acl.SetAccessRuleProtection($false,$false)      # marks the DACL modified: the write re-inherits from the folder
-  (Get-Item -LiteralPath $path -Force).SetAccessControl($acl)
-  return ((Get-Item -LiteralPath $path -Force).GetAccessControl('Access').GetSecurityDescriptorSddlForm('Access') -ne $before)
+# inherited permissions (Explorer adds those by hand; MoveFileEx does not). Secure-Root used to rewrite $Root's
+# SYSTEM+Administrators-only ACL at every guard start, which re-propagated it onto every parked shortcut, and the restore
+# carried exactly that back into Startup: the owner's unelevated Explorer could not read zebar.exe.lnk / Tailscale.lnk /
+# Brother iPSMonitor.lnk and skipped them without a word (the rig's first hardware boot after the VM, 2026-10-17).
+# Shortcuts with an EXPLICIT owner ACE (wtq, the AHK scripts) survived - which is why only some went missing.
+# So Unpark-File gives a shortcut its Startup folder's file permissions (as explicit ACEs) while it is still in the park,
+# then renames it back. SYSTEM never writes a DACL inside a Startup folder: the owner can write there unelevated, and a
+# hard link or symlink planted there would aim a SYSTEM ACL write at a file of their choosing. In the park (users cannot
+# create or swap entries) only an entry that is neither a reparse point nor hard-linked is touched. tests/test_guard_static.py
+# forbids a Move-Item outside Park-File / Unpark-File and any ACL write outside Secure-Root / Unpark-File.
+function Park-File([string]$from,[string]$to){ Move-Item -LiteralPath $from -Destination $to -Force }   # a rename: the file is not changed
+function Link-Count([string]$path){
+  # How many names the file has (fsutil lists them, one per line). -1 = could not tell, which counts as unsafe.
+  $o = @(& "$env:SystemRoot\System32\fsutil.exe" hardlink list "$path" 2>$null)
+  if($LASTEXITCODE -ne 0){ return -1 }
+  return @($o | Where-Object { "$_".Trim() }).Count
 }
-function Move-Adopt([string]$from,[string]$to){
-  Move-Item -LiteralPath $from -Destination $to -Force
-  [void](Adopt-Inheritance $to)
+function File-Rights($rule){
+  # A folder ACE's mask as a file ACE gets it: generic bits mapped to the file-specific rights (what inheritance does).
+  $m = ([int64][int]$rule.FileSystemRights) -band 4294967295
+  $r = $m -band 0x0FFFFFFF
+  if($m -band 0x10000000){ $r = $r -bor 0x1F01FF }      # GENERIC_ALL     -> FullControl
+  if($m -band 0x20000000){ $r = $r -bor 0x1200A0 }      # GENERIC_EXECUTE -> execute + read attributes + synchronize
+  if($m -band 0x40000000){ $r = $r -bor 0x120116 }      # GENERIC_WRITE   -> Write
+  if($m -band 2147483648){ $r = $r -bor 0x120089 }      # GENERIC_READ    -> Read
+  return [System.Security.AccessControl.FileSystemRights][int]$r
 }
-# Shortcuts that a guard older than Move-Adopt already restored are still in Startup with the park's ACL: every hardware
-# boot re-inherits each one (a no-op on a healthy shortcut, so only a real repair is logged).
-function Repair-StartupAcl {
-  foreach($k in $StartupDirs.Keys){
-    if(-not (Test-Path $StartupDirs[$k])){ continue }
-    foreach($f in Get-ChildItem -LiteralPath $StartupDirs[$k] -File -Force -ErrorAction SilentlyContinue){
-      if($f.Name -ieq 'desktop.ini'){ continue }
-      try { if(Adopt-Inheritance $f.FullName){ Log "startup ACL repaired [$k]: $($f.Name) (re-inherited from its folder)" } }
-      catch { Log "WARN startup ACL [$k] $($f.Name): $($_.Exception.Message)" }
-    }
+function Folder-FileRules([string]$folder){
+  # The ACEs a new FILE in $folder would inherit: its object-inheritable ones (CREATOR OWNER/GROUP name the creator - skipped).
+  $out = @()
+  foreach($r in (Get-Item -LiteralPath $folder -Force).GetAccessControl('Access').GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])){
+    if(-not ($r.InheritanceFlags -band [System.Security.AccessControl.InheritanceFlags]::ObjectInherit)){ continue }
+    if($r.IdentityReference.Value -in @('S-1-3-0','S-1-3-1')){ continue }
+    $out += New-Object System.Security.AccessControl.FileSystemAccessRule($r.IdentityReference, (File-Rights $r), 'None', 'None', $r.AccessControlType)
   }
+  return $out
+}
+function Unpark-File([string]$from,[string]$toDir){
+  # Grant the folder's file permissions IN THE PARK, then rename into $toDir. Returns the restored path.
+  $fi = Get-Item -LiteralPath $from -Force
+  $to = Join-Path $toDir $fi.Name
+  if($fi.Attributes -band [System.IO.FileAttributes]::ReparsePoint){ Log "WARN unpark $($fi.Name): a reparse point - restored without new permissions" }
+  elseif((Link-Count $from) -ne 1){ Log "WARN unpark $($fi.Name): hard-linked (or its link count is unreadable) - restored without new permissions" }
+  else {
+    $acl = $fi.GetAccessControl('Access')                 # DACL only: the owner is never rewritten
+    foreach($r in (Folder-FileRules $toDir)){ $acl.AddAccessRule($r) }
+    $fi.SetAccessControl($acl)
+  }
+  Move-Item -LiteralPath $from -Destination $to -Force
+  return $to
 }
 
 # =========================================================================================================
@@ -367,7 +390,7 @@ function Restore-Parked {
   # Startup .lnks from the disk park
   foreach($k in $StartupDirs.Keys){
     $park = Join-Path $StartupPark $k
-    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Join-Path $StartupDirs[$k] $f.Name; Move-Adopt $f.FullName $to; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
+    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Unpark-File $f.FullName $StartupDirs[$k]; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
   }
   Remove-Item -Path $RunPark -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue
@@ -390,6 +413,7 @@ if($Mode -eq 'status'){
 }
 $kind = if($Mode -eq 'auto'){ Get-BootKind } else { $Mode }
 Log "guard start: Mode=$Mode kind=$kind"
+if($RootRewritten){ Log "Secure-Root: $Root was not locked - ACL rewritten (this propagates onto the park)" }
 # PreventDeviceEncryption=1 (D3/T4): permanent, both hardware and VM. Stops Windows auto-encrypting C: on the
 # hardware (which would break the whole VM scheme and Garuda reading C:). Needs SYSTEM - works from the boot task.
 try {
@@ -414,7 +438,7 @@ switch($kind){
     Apply-Suppress $state
     Log "VM mode applied"
   }
-  'hardware' { Restore; Repair-StartupAcl }
+  'hardware' { Restore }
   default    { Log "UNSURE what kind of boot this is (SMBIOS unreadable) - doing NOTHING (never harm the hardware Windows)" }
 }
 Log "guard done"

@@ -137,50 +137,67 @@ class GuardNeverRecreatesARegistryKey(unittest.TestCase):
 
 class GuardMovedFilesTakeTheirFoldersPermissions(unittest.TestCase):
     """2026-10-17, the rig's first hardware boot since the guard's first VM boot (10-09): no Zebar, no Tailscale tray.
-    A same-volume Move-Item is a rename and keeps the file's security descriptor; the park lives in C:\\ProgramData\\jxn-vm,
-    whose SYSTEM+Administrators-only ACL Secure-Root re-propagates at every guard start, so the restore put zebar.exe.lnk,
-    Tailscale.lnk and Brother iPSMonitor.lnk back into Startup unreadable to the owner's unelevated Explorer, which skipped
-    them silently. (wtq and the AHK shortcuts carry an explicit owner ACE and survived.) Every file the guard moves now goes
-    through Move-Adopt, which re-inherits from the destination folder; a hardware boot also repairs shortcuts an older
-    guard restored."""
+    A same-volume Move-Item is a rename and keeps the file's security descriptor, and Secure-Root rewrote
+    C:\\ProgramData\\jxn-vm's SYSTEM+Administrators-only ACL at every guard start, which re-propagated onto the parked
+    shortcuts; the restore put zebar.exe.lnk, Tailscale.lnk and Brother iPSMonitor.lnk back into Startup unreadable to the
+    owner's unelevated Explorer, which skipped them silently. (wtq and the AHK shortcuts carry an explicit owner ACE.)
+    Now Secure-Root writes only when the ACL is wrong, and Unpark-File grants the folder's file permissions while the
+    shortcut is still in the park. SYSTEM never writes an ACL inside a Startup folder (user-writable: a planted hard link
+    or symlink would aim the write elsewhere - the first fix's in-place repair did exactly that, found by review)."""
 
     MOVE = re.compile(r"\bMove-Item\b")
+    ACL_WRITE = re.compile(r"\b(Set-Acl|SetAccessControl|icacls)\b", re.I)
 
-    def bare_moves(self, src: str) -> list[str]:
-        adopt = function_body(src, "Move-Adopt")
-        rest = src.replace(adopt, "") if adopt else src
-        return [l.strip() for l in rest.splitlines() if not l.lstrip().startswith("#") and self.MOVE.search(l)]
+    @staticmethod
+    def code(src: str, allowed: tuple[str, ...]) -> list[str]:
+        for fn in allowed:
+            body = function_body(src, fn)
+            if body:
+                src = src.replace(body, "")
+        return [l.strip() for l in src.splitlines() if not l.lstrip().startswith("#")]
 
-    def test_no_bare_move_item(self):
-        self.assertEqual(self.bare_moves(GUARD), [])
-        self.assertEqual(self.bare_moves(INSTALL), [])
+    def test_no_move_item_outside_park_and_unpark(self):
+        for name, src in (("guard.ps1", GUARD), ("install-guard.ps1", INSTALL)):
+            self.assertEqual([l for l in self.code(src, ("Park-File", "Unpark-File")) if self.MOVE.search(l)], [], name)
 
-    def test_positive_control_old_restore_line_is_caught(self):
-        old = "    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ Move-Item $f.FullName $to -Force } }\n"
-        self.assertEqual(len(self.bare_moves(old)), 1)
+    def test_no_acl_write_outside_secure_root_and_unpark(self):
+        self.assertEqual([l for l in self.code(GUARD, ("Secure-Root", "Unpark-File")) if self.ACL_WRITE.search(l)], [])
 
-    def test_move_adopt_re_inherits_after_the_move(self):
-        body = function_body(GUARD, "Move-Adopt")
-        self.assertIn("Move-Item", body)
-        self.assertIn("Adopt-Inheritance $to", body)
-        self.assertLess(body.index("Move-Item"), body.index("Adopt-Inheritance $to"))
+    def test_positive_controls(self):
+        old_restore = "  foreach($f in Get-ChildItem $park -File){ Move-Item $f.FullName $to -Force }\n"
+        self.assertEqual(len([l for l in self.code(old_restore, ()) if self.MOVE.search(l)]), 1)
+        first_fix = "function Repair-StartupAcl {\n  (Get-Item $f).SetAccessControl($acl)\n}\n"
+        self.assertEqual(len([l for l in self.code(first_fix, ("Secure-Root", "Unpark-File")) if self.ACL_WRITE.search(l)]), 1)
 
-    def test_adopt_writes_only_the_dacl_and_keeps_protected_ones(self):
-        body = function_body(GUARD, "Adopt-Inheritance")
-        self.assertIn("GetAccessControl('Access')", body)            # DACL only: the owner is never rewritten
-        self.assertIn("SetAccessRuleProtection($false,$false)", body)
-        self.assertIn("AreAccessRulesProtected", body)                # inheritance deliberately off -> left alone
-        self.assertNotIn("Set-Acl", body)                             # Set-Acl rewrites the owner too
+    def test_no_in_place_repair_of_a_startup_folder(self):
+        self.assertNotIn("Repair-StartupAcl", GUARD)
+        self.assertRegex(GUARD, r"'hardware'\s*\{\s*Restore\s*\}")
 
-    def test_park_and_restore_both_use_it(self):
-        for fn in ("Move-StartupAway", "Restore-Parked"):
-            self.assertIn("Move-Adopt", function_body(GUARD, fn), fn)
+    def test_unpark_grants_in_the_park_then_renames(self):
+        body = function_body(GUARD, "Unpark-File")
+        self.assertIn("ReparsePoint", body)
+        self.assertIn("(Link-Count $from) -ne 1", body)
+        self.assertIn("GetAccessControl('Access')", body)              # DACL only: the owner is never rewritten
+        self.assertIn("Folder-FileRules $toDir", body)
+        self.assertLess(body.index("SetAccessControl"), body.index("Move-Item"))
+        self.assertIn("SetAccessControl($acl)", body)
+        self.assertNotIn("$to).SetAccessControl", body)
 
-    def test_hardware_boot_repairs_shortcuts_an_older_guard_restored(self):
-        self.assertRegex(GUARD, r"'hardware'\s*\{\s*Restore;\s*Repair-StartupAcl\s*\}")
-        self.assertIn("Adopt-Inheritance", function_body(GUARD, "Repair-StartupAcl"))
+    def test_folder_rules_map_generic_rights_and_skip_creator_sids(self):
+        self.assertIn("ObjectInherit", function_body(GUARD, "Folder-FileRules"))
+        self.assertIn("'S-1-3-0'", function_body(GUARD, "Folder-FileRules"))
+        self.assertIn("0x10000000", function_body(GUARD, "File-Rights"))
 
-    def test_harness_exercises_the_round_trip(self):
+    def test_secure_root_writes_only_when_the_acl_is_wrong(self):
+        body = function_body(GUARD, "Secure-Root")
+        self.assertIn("if($acl.Sddl -eq (Get-Acl -Path $path).Sddl){ return $false }", body)
+        self.assertLess(body.index("return $false"), body.index("Set-Acl -Path $path -AclObject"))
+
+    def test_park_and_restore_use_the_primitives(self):
+        self.assertIn("Park-File", function_body(GUARD, "Move-StartupAway"))
+        self.assertIn("Unpark-File", function_body(GUARD, "Restore-Parked"))
+
+    def test_harness_exercises_the_round_trip_and_a_planted_link(self):
         harness = (GUEST / "test-guard-policies.ps1").read_text()
-        for name in ("Move-StartupAway", "Restore-Parked", "Adopt-Inheritance", "Lock-Dir $parkRoot"):
+        for name in ("Move-StartupAway", "Restore-Parked", "Lock-Dir $parkRoot", "ItemType HardLink", "targetBefore"):
             self.assertIn(name, harness)
