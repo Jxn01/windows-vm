@@ -5,13 +5,15 @@
     Covers both state.json shapes: one written by a guard before 2026-10-12 (NoAutoUpdate_prev in .wu, no .policies)
     and the current one (.policies); that setting a policy keeps the key's OTHER values; and Run parking across two VM
     boots in a row + a hardware restore into a Run key that already has values (2026-10-15: the old guard's
-    `New-Item -Force` wiped the parked Run entries on the second VM boot). The Linux suite checks the same code statically (tests/test_guard_static.py).
+    `New-Item -Force` wiped the parked Run entries on the second VM boot); and that a parked Startup shortcut comes back
+    with its folder's permissions, not the park's (2026-10-17: Zebar and the Tailscale tray did not start - section E,
+    in a scratch folder under %TEMP%). The Linux suite checks the same code statically (tests/test_guard_static.py).
 #>
 param([string]$Guard = (Join-Path $PSScriptRoot 'guard.ps1'))
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Guard, [ref]$null, [ref]$null)
 $fns = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey') { . ([scriptblock]::Create($fn.Extent.Text)) } }
+foreach ($fn in $fns) { if ($fn.Name -in 'Ensure-Key','Read-Policy','Set-VmPolicy','Saved-Policy','Ensure-PolicyState','Move-RunAway','Restore-RunKey','Adopt-Inheritance','Move-Adopt','Move-StartupAway','Restore-Parked') { . ([scriptblock]::Create($fn.Extent.Text)) } }
 $restoreFn = $fns | Where-Object Name -eq 'Restore'
 $restoreLoop = $restoreFn.Body.FindAll({ $args[0] -is [System.Management.Automation.Language.ForEachStatementAst] -and $args[0].Extent.Text -match 'Saved-Policy' }, $true) | Select-Object -First 1
 function Log($m) { $script:log += , $m }
@@ -70,6 +72,54 @@ $live = @((Get-Item $run).GetValueNames())
 Check 'D: restore put Steam + Spotify back' (($live -contains 'Steam') -and ($live -contains 'Spotify'))
 Check 'D: restore kept a value already in the live Run key' ($live -contains 'OneDrive')
 Check 'D: restored value text is exact' ((Get-Item $run).GetValue('Steam') -eq '"C:\Steam\steam.exe" -silent')
+
+# E. Startup .lnk parking keeps each folder's permissions (2026-10-17: zebar.exe.lnk came back from the park with the
+#    park's SYSTEM+Administrators-only DACL - a same-volume move keeps the security descriptor - so the owner's unelevated
+#    Explorer could not read it and skipped it; Tailscale.lnk and Brother iPSMonitor.lnk the same). Unelevated, in %TEMP%:
+#    'Startup' grants me FullControl + Everyone ReadAndExecute (inheritable), 'root' plays the locked park (me only).
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$every = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
+$users = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+function Lock-Dir([string]$d, $readers) {   # protected DACL; re-applying it propagates down the tree, as Secure-Root does at every guard start
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $a = Get-Acl -LiteralPath $d; $a.SetAccessRuleProtection($true, $false)
+  foreach ($r in @($a.Access)) { [void]$a.RemoveAccessRule($r) }
+  $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+  foreach ($s in $readers) { $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }
+  Set-Acl -LiteralPath $d -AclObject $a }
+function Rules([string]$f, [bool]$explicit, [bool]$inherited) { @((Get-Acl -LiteralPath $f).GetAccessRules($explicit, $inherited, [System.Security.Principal.SecurityIdentifier])) }
+function Everyone-Reads([string]$f) { [bool](@(Rules $f $true $true | Where-Object { $_.IdentityReference -eq $every -and ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData) })) }
+$tmp = Join-Path $env:TEMP 'jxn-guard-acl-test'; Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+$liveDir = "$tmp\Startup"; $parkRoot = "$tmp\root"
+Lock-Dir $liveDir @($every); Lock-Dir $parkRoot @()
+# control: the bare round trip the old guard did. If this does not lose the ACE, the harness cannot see the trap.
+'x' | Set-Content "$liveDir\bare.lnk"
+Move-Item "$liveDir\bare.lnk" "$parkRoot\bare.lnk"; Lock-Dir $parkRoot @(); Move-Item "$parkRoot\bare.lnk" "$liveDir\bare.lnk"
+Check 'E: control - a bare Move-Item round trip loses the Startup folder''s ACE (the 2026-10-17 trap is visible)' (-not (Everyone-Reads "$liveDir\bare.lnk"))
+Remove-Item "$liveDir\bare.lnk" -Force
+# the guard's own park + restore
+$StartupDirs = @{ user = $liveDir }; $StartupPark = "$parkRoot\suppressed-startup"; $RunPark = "$base\no-run-park"
+$script:RestoredLaunch = New-Object System.Collections.Generic.List[string]
+'x' | Set-Content "$liveDir\zebar.exe.lnk"; 'x' | Set-Content "$liveDir\wtq.exe.lnk"
+$a = Get-Acl -LiteralPath "$liveDir\wtq.exe.lnk"; $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($users, 'Write', 'Allow'))); Set-Acl -LiteralPath "$liveDir\wtq.exe.lnk" -AclObject $a
+Check 'E: setup - a Startup file inherits the folder''s Everyone ACE' (Everyone-Reads "$liveDir\zebar.exe.lnk")
+Move-StartupAway $liveDir 'user'                                       # VM boot
+Check 'E: VM boot parked the shortcut and it took the park''s permissions' ((Test-Path "$StartupPark\user\zebar.exe.lnk") -and -not (Everyone-Reads "$StartupPark\user\zebar.exe.lnk"))
+Lock-Dir $parkRoot @()                                                 # the next guard start re-secures its root
+Restore-Parked                                                         # hardware restore
+Check 'E: restored shortcut inherits the Startup folder''s permissions again' (Everyone-Reads "$liveDir\zebar.exe.lnk")
+Check 'E: an explicit ACE survives the round trip' ([bool](@(Rules "$liveDir\wtq.exe.lnk" $true $false | Where-Object { $_.IdentityReference -eq $users })))
+Check 'E: restored shortcut keeps inheritance on' (-not (Get-Acl -LiteralPath "$liveDir\zebar.exe.lnk").AreAccessRulesProtected)
+# a shortcut an OLDER guard already restored with the park's ACL is repaired in place on a hardware boot
+'x' | Set-Content "$parkRoot\old.lnk"; Move-Item "$parkRoot\old.lnk" "$liveDir\old.lnk"
+Check 'E: setup - the old guard''s restore left a shortcut unreadable to Everyone' (-not (Everyone-Reads "$liveDir\old.lnk"))
+$fixed = Adopt-Inheritance "$liveDir\old.lnk"
+Check 'E: Adopt-Inheritance repaired it and said so' ($fixed -and (Everyone-Reads "$liveDir\old.lnk"))
+Check 'E: Adopt-Inheritance on a healthy file changes nothing and says so' (-not (Adopt-Inheritance "$liveDir\old.lnk"))
+'x' | Set-Content "$liveDir\locked.lnk"; $a = Get-Acl -LiteralPath "$liveDir\locked.lnk"; $a.SetAccessRuleProtection($true, $false)
+$a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow'))); Set-Acl -LiteralPath "$liveDir\locked.lnk" -AclObject $a
+Check 'E: a deliberately protected DACL is left alone' ((-not (Adopt-Inheritance "$liveDir\locked.lnk")) -and -not (Everyone-Reads "$liveDir\locked.lnk"))
+Remove-Item $tmp -Recurse -Force
 
 Remove-Item $base -Recurse -Force; Remove-Item $StateFile -Force
 if ($script:failed) { "$($script:failed) FAILED"; exit 1 } else { "all PASS" }

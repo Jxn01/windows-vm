@@ -13,7 +13,9 @@
                         the Store's AutoDownload=2 (no app auto-updates); Defender signatures still update); and
                         set DevicePasswordLessBuildVersion=0 so the password sign-in tile shows.
       * Hardware boot-> RESTORE exactly what was saved, so the next real boot has the lights, HASS.Agent, Zebar
-                        and all autostarts back.
+                        and all autostarts back. A shortcut moved in or out of the park takes its new folder's
+                        permissions (Move-Adopt - else the owner's Explorer cannot read it), and every hardware boot
+                        re-inherits the Startup shortcuts an older guard restored with the park's ACL.
       * Unsure (can't read the marker) -> do NOTHING and log loudly (never make the hardware worse).
 
     It never touches the Windows Hello PIN (owner rule T10) and never runs Windows Update.
@@ -243,8 +245,42 @@ function Move-StartupAway([string]$dir,[string]$label){
   $park = Join-Path $StartupPark $label; New-Item -ItemType Directory -Force -Path $park | Out-Null
   foreach($f in Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue){
     if($f.Name -ieq 'desktop.ini'){ continue }
-    Move-Item -Path $f.FullName -Destination (Join-Path $park $f.Name) -Force
+    Move-Adopt $f.FullName (Join-Path $park $f.Name)
     Log "startup moved aside [$label]: $($f.Name)"
+  }
+}
+
+# A same-volume Move-Item is a RENAME: the file keeps the security descriptor it had and never gets its new folder's
+# inherited permissions (Explorer adds those by hand; MoveFileEx does not). A parked .lnk sits in $Root, whose
+# SYSTEM+Administrators-only ACL Secure-Root re-propagates at every guard start, and the old restore carried exactly that
+# back into Startup: the owner's unelevated Explorer could not read zebar.exe.lnk / Tailscale.lnk / Brother iPSMonitor.lnk
+# and skipped them without a word (the rig's first hardware boot after the VM, 2026-10-17). Shortcuts with an EXPLICIT
+# owner ACE (wtq, the AHK scripts) survived - which is why only some went missing. Every file the guard moves goes through
+# Move-Adopt; tests/test_guard_static.py forbids a bare Move-Item.
+function Adopt-Inheritance([string]$path){
+  # Recompute $path's inherited ACEs from its CURRENT folder; explicit ACEs are kept. Only the DACL is written (never the
+  # owner), and a deliberately protected DACL (inheritance off) is left alone. $true = the permissions changed.
+  $acl = (Get-Item -LiteralPath $path -Force).GetAccessControl('Access')
+  if($acl.AreAccessRulesProtected){ return $false }
+  $before = $acl.GetSecurityDescriptorSddlForm('Access')
+  $acl.SetAccessRuleProtection($false,$false)      # marks the DACL modified: the write re-inherits from the folder
+  (Get-Item -LiteralPath $path -Force).SetAccessControl($acl)
+  return ((Get-Item -LiteralPath $path -Force).GetAccessControl('Access').GetSecurityDescriptorSddlForm('Access') -ne $before)
+}
+function Move-Adopt([string]$from,[string]$to){
+  Move-Item -LiteralPath $from -Destination $to -Force
+  [void](Adopt-Inheritance $to)
+}
+# Shortcuts that a guard older than Move-Adopt already restored are still in Startup with the park's ACL: every hardware
+# boot re-inherits each one (a no-op on a healthy shortcut, so only a real repair is logged).
+function Repair-StartupAcl {
+  foreach($k in $StartupDirs.Keys){
+    if(-not (Test-Path $StartupDirs[$k])){ continue }
+    foreach($f in Get-ChildItem -LiteralPath $StartupDirs[$k] -File -Force -ErrorAction SilentlyContinue){
+      if($f.Name -ieq 'desktop.ini'){ continue }
+      try { if(Adopt-Inheritance $f.FullName){ Log "startup ACL repaired [$k]: $($f.Name) (re-inherited from its folder)" } }
+      catch { Log "WARN startup ACL [$k] $($f.Name): $($_.Exception.Message)" }
+    }
   }
 }
 
@@ -331,7 +367,7 @@ function Restore-Parked {
   # Startup .lnks from the disk park
   foreach($k in $StartupDirs.Keys){
     $park = Join-Path $StartupPark $k
-    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Join-Path $StartupDirs[$k] $f.Name; Move-Item $f.FullName $to -Force; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
+    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ $to = Join-Path $StartupDirs[$k] $f.Name; Move-Adopt $f.FullName $to; $script:RestoredLaunch.Add($to); Log "startup restored [$k]: $($f.Name)" } }
   }
   Remove-Item -Path $RunPark -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $StartupPark -Recurse -Force -ErrorAction SilentlyContinue
@@ -378,7 +414,7 @@ switch($kind){
     Apply-Suppress $state
     Log "VM mode applied"
   }
-  'hardware' { Restore }
+  'hardware' { Restore; Repair-StartupAcl }
   default    { Log "UNSURE what kind of boot this is (SMBIOS unreadable) - doing NOTHING (never harm the hardware Windows)" }
 }
 Log "guard done"

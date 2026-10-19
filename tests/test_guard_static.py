@@ -133,3 +133,54 @@ class GuardNeverRecreatesARegistryKey(unittest.TestCase):
         harness = (GUEST / "test-guard-policies.ps1").read_text()
         self.assertIn("Move-RunAway", harness)
         self.assertIn("Restore-RunKey", harness)
+
+
+class GuardMovedFilesTakeTheirFoldersPermissions(unittest.TestCase):
+    """2026-10-17, the rig's first hardware boot since the guard's first VM boot (10-09): no Zebar, no Tailscale tray.
+    A same-volume Move-Item is a rename and keeps the file's security descriptor; the park lives in C:\\ProgramData\\jxn-vm,
+    whose SYSTEM+Administrators-only ACL Secure-Root re-propagates at every guard start, so the restore put zebar.exe.lnk,
+    Tailscale.lnk and Brother iPSMonitor.lnk back into Startup unreadable to the owner's unelevated Explorer, which skipped
+    them silently. (wtq and the AHK shortcuts carry an explicit owner ACE and survived.) Every file the guard moves now goes
+    through Move-Adopt, which re-inherits from the destination folder; a hardware boot also repairs shortcuts an older
+    guard restored."""
+
+    MOVE = re.compile(r"\bMove-Item\b")
+
+    def bare_moves(self, src: str) -> list[str]:
+        adopt = function_body(src, "Move-Adopt")
+        rest = src.replace(adopt, "") if adopt else src
+        return [l.strip() for l in rest.splitlines() if not l.lstrip().startswith("#") and self.MOVE.search(l)]
+
+    def test_no_bare_move_item(self):
+        self.assertEqual(self.bare_moves(GUARD), [])
+        self.assertEqual(self.bare_moves(INSTALL), [])
+
+    def test_positive_control_old_restore_line_is_caught(self):
+        old = "    if(Test-Path $park){ foreach($f in Get-ChildItem $park -File){ Move-Item $f.FullName $to -Force } }\n"
+        self.assertEqual(len(self.bare_moves(old)), 1)
+
+    def test_move_adopt_re_inherits_after_the_move(self):
+        body = function_body(GUARD, "Move-Adopt")
+        self.assertIn("Move-Item", body)
+        self.assertIn("Adopt-Inheritance $to", body)
+        self.assertLess(body.index("Move-Item"), body.index("Adopt-Inheritance $to"))
+
+    def test_adopt_writes_only_the_dacl_and_keeps_protected_ones(self):
+        body = function_body(GUARD, "Adopt-Inheritance")
+        self.assertIn("GetAccessControl('Access')", body)            # DACL only: the owner is never rewritten
+        self.assertIn("SetAccessRuleProtection($false,$false)", body)
+        self.assertIn("AreAccessRulesProtected", body)                # inheritance deliberately off -> left alone
+        self.assertNotIn("Set-Acl", body)                             # Set-Acl rewrites the owner too
+
+    def test_park_and_restore_both_use_it(self):
+        for fn in ("Move-StartupAway", "Restore-Parked"):
+            self.assertIn("Move-Adopt", function_body(GUARD, fn), fn)
+
+    def test_hardware_boot_repairs_shortcuts_an_older_guard_restored(self):
+        self.assertRegex(GUARD, r"'hardware'\s*\{\s*Restore;\s*Repair-StartupAcl\s*\}")
+        self.assertIn("Adopt-Inheritance", function_body(GUARD, "Repair-StartupAcl"))
+
+    def test_harness_exercises_the_round_trip(self):
+        harness = (GUEST / "test-guard-policies.ps1").read_text()
+        for name in ("Move-StartupAway", "Restore-Parked", "Adopt-Inheritance", "Lock-Dir $parkRoot"):
+            self.assertIn(name, harness)
