@@ -369,9 +369,10 @@ function Start-Restored($state){
     if((Norm $state.services.$n) -eq 'Automatic'){ try { Start-Service -Name $n -ErrorAction Stop; Log "started (restored auto service): $n" } catch { Log "WARN start svc $n : $($_.Exception.Message)" } }
   }
   $ownerSid = $null; try { $ownerSid = (Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -eq $ProfilePath }).SID } catch {}
-  $loggedOn = $false
+  $loggedOn = $false; $ownerExplorerStart = $null
   if($ownerSid){ foreach($e in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue)){
-    try { if((Invoke-CimMethod -InputObject $e -MethodName GetOwnerSid).Sid -eq $ownerSid){ $loggedOn = $true } } catch {} } }
+    try { if((Invoke-CimMethod -InputObject $e -MethodName GetOwnerSid).Sid -eq $ownerSid){ $loggedOn = $true
+      if($e.CreationDate -and (-not $ownerExplorerStart -or $e.CreationDate -lt $ownerExplorerStart)){ $ownerExplorerStart = $e.CreationDate } } } catch {} } }
   foreach($id in $state.tasks){
     $name=Split-Path $id -Leaf; $path=$id.Substring(0,$id.Length-$name.Length)
     $t = Get-ScheduledTask -TaskName $name -TaskPath $path -ErrorAction SilentlyContinue; if(-not $t){ continue }
@@ -379,12 +380,46 @@ function Start-Restored($state){
     if($trig -match 'Boot' -or ($loggedOn -and $trig -match 'Logon')){
       try { Start-ScheduledTask -TaskName $name -TaskPath $path -ErrorAction Stop; Log "started (restored task, missed its trigger): $id" } catch { Log "WARN start task $id : $($_.Exception.Message)" } }
   }
-  if($loggedOn -and $script:RestoredLaunch.Count -gt 0){
+  # Direct-launch the restored Startup/Run items ONLY when the owner logged on BEFORE they were restored (T27: Explorer
+  # already processed Startup/Run while they were still parked, so it missed them). If the owner logs on AFTER the
+  # restore, Explorer runs them itself, and launching here too starts a SECOND copy -- the start-menu-reveal
+  # "could not close the previous instance" dialog, 2026-10-28. Skip ONLY when we KNOW Explorer started after the
+  # restore; any uncertainty errs toward launching, because a missed autostart is worse than a duplicate.
+  $explorerAfterRestore = $loggedOn -and $ownerExplorerStart -and $script:restoreStamp -and ($ownerExplorerStart -ge $script:restoreStamp)
+  if($loggedOn -and $script:RestoredLaunch.Count -gt 0 -and -not $explorerAfterRestore){
     # Startup .lnks and Run command lines must start INSIDE the owner's session: a one-shot task as the owner.
     # conhost --headless, never powershell -WindowStyle Hidden: Windows Terminal (the default terminal) ignores
     # SW_HIDE and flashes a window on the owner's screen (seen 2026-10-12).
-    $cmds = foreach($x in $script:RestoredLaunch){ if($x -match '\.lnk$'){ "Start-Process -FilePath '$($x -replace "'","''")'" } else { "& cmd.exe /c 'start `"`" $($x -replace "'","''")'" } }   # inherits the headless console: no window
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($cmds -join '; ')))
+    # A Run value is a raw command line whose program is often an UNQUOTED path with spaces (C:\Program Files\...).
+    # `start "" <value>` (the old way) handed that to cmd's start, which split it at the first space and failed with
+    # "Windows cannot find 'C:\Program'" at boot (2026-10-28). Split-RunCommand separates the program from its arguments
+    # (quoted, or the longest leading prefix that is a real file - the same resolution Windows' Run key does) and
+    # Start-Process launches it. The split runs in the OWNER's context so %APPDATA% etc. expand correctly. A .lnk goes
+    # straight to Start-Process, which resolves the shortcut.
+    # Split-RunCommand (inlined; every line indented so no column-0 brace) separates a Run value's program from its args
+    # the way Windows' Run key does: a quoted program as-is, else the longest leading prefix that is a real file.
+    $arr = '@(' + (($script:RestoredLaunch | ForEach-Object { "'" + ($_ -replace "'","''") + "'" }) -join ',') + ')'
+    $body = @'
+ function Split-RunCommand([string]$cmd){
+   $cmd = "$cmd".Trim()
+   if($cmd.StartsWith('"')){ $e = $cmd.IndexOf('"',1); if($e -lt 0){ return @{ Exe=$cmd.Trim('"'); Args='' } }
+     return @{ Exe=$cmd.Substring(1,$e-1); Args=$cmd.Substring($e+1).Trim() } }
+   $p = $cmd -split ' '
+   for($i=1; $i -le $p.Count; $i++){
+     $cand = ($p[0..($i-1)] -join ' ')
+     foreach($ext in @('','.exe','.com','.bat','.cmd')){
+       if([IO.File]::Exists([Environment]::ExpandEnvironmentVariables($cand+$ext))){
+         return @{ Exe=$cand+$ext; Args=(($p[$i..($p.Count-1)]) -join ' ') } } } }
+   return @{ Exe=$p[0]; Args=(($p[1..($p.Count-1)]) -join ' ') }
+ }
+ foreach($x in $ITEMS){
+   if($x -match '\.lnk$'){ Start-Process -FilePath $x; continue }
+   $s = Split-RunCommand $x
+   if($s.Args){ Start-Process -FilePath $s.Exe -ArgumentList $s.Args } else { Start-Process -FilePath $s.Exe }
+ }
+'@
+    $script = "`$ITEMS = $arr`n" + $body
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     try {
       Register-ScheduledTask -TaskName 'jxn-vm-late-start' -TaskPath '\' -Force `
         -Action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless powershell.exe -NoProfile -EncodedCommand $enc") `
@@ -393,12 +428,15 @@ function Start-Restored($state){
       Log "started $($script:RestoredLaunch.Count) restored Startup/Run item(s) in the owner's session"
     } catch { Log "WARN late start of Startup/Run items: $($_.Exception.Message)" }
     finally { Unregister-ScheduledTask -TaskName 'jxn-vm-late-start' -Confirm:$false -ErrorAction SilentlyContinue }
-  } elseif(-not $loggedOn){ Log "owner not logged on yet - logon autostarts will run at the logon" }
+  } elseif($explorerAfterRestore -and $script:RestoredLaunch.Count -gt 0){ Log "owner logged on after the restore - Explorer runs the $($script:RestoredLaunch.Count) restored Startup/Run item(s); not relaunching" }
+  elseif(-not $loggedOn){ Log "owner not logged on yet - logon autostarts will run at the logon" }
 }
 function Norm($m){ switch -regex ("$m"){ 'Disabled'{'Disabled'} 'Manual'{'Manual'} default{'Automatic'} } }
 
 $script:RestoredLaunch = New-Object System.Collections.Generic.List[string]   # .lnk paths / Run command lines
+$script:restoreStamp = $null                                                  # when the parked items were put back (for the Explorer-double-launch guard in Start-Restored)
 function Restore-Parked {
+  $script:restoreStamp = Get-Date
   # Run entries from the registry park
   foreach($label in @('runHKLM','runHKLM32')){
     $park = Join-Path $RunPark $label

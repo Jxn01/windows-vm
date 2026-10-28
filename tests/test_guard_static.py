@@ -45,6 +45,25 @@ class GuardStartsWhatTheBootSkipped(unittest.TestCase):
         code = [l for l in GUARD.splitlines() if not l.lstrip().startswith("#")]
         self.assertFalse([l for l in code if "-WindowStyle Hidden" in l])
 
+    def test_run_values_are_split_not_started_via_cmd(self):
+        # A Run value is a raw command line, often an UNQUOTED path with spaces (C:\Program Files\...). `start "" <value>`
+        # split it at the first space -> "Windows cannot find 'C:\Program'" at boot (2026-10-28). Split-RunCommand
+        # separates program from args the way Windows' Run key does, then Start-Process launches it.
+        body = function_body(GUARD, "Start-Restored")
+        self.assertNotIn('start `"`"', body)                       # the old, broken launch
+        self.assertNotIn("cmd.exe /c 'start", body)
+        self.assertIn("function Split-RunCommand", body)           # splitter inlined in the owner-context launch script
+        self.assertIn("Split-RunCommand $x", body)                 # Run values resolved like the Run key
+        self.assertIn("Start-Process -FilePath $s.Exe", body)
+
+    def test_restored_items_not_relaunched_when_explorer_started_after_restore(self):
+        # If the owner logs on AFTER the restore, Explorer runs the restored Startup/Run items itself; launching them
+        # here too starts a second copy (the start-menu-reveal "could not close the previous instance" dialog).
+        body = function_body(GUARD, "Start-Restored")
+        self.assertIn("ownerExplorerStart", body)
+        self.assertRegex(body, r"ownerExplorerStart -ge \$script:restoreStamp")
+        self.assertIn("restoreStamp = Get-Date", function_body(GUARD, "Restore-Parked"))
+
     def test_positive_control(self):
         self.assertEqual(function_body("function A {\n x\n}\nfunction B {\n y\n}\n", "B"), "function B {\n y\n}")
 
