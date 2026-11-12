@@ -18,7 +18,7 @@ automation agents, updates) on a VM boot and restores them on the next real boot
 
 ## Status
 
-**Working since 2026-10-09** — daily use: `winvm start`, `winvm ssh`, `winvm stop` (142 unit tests and a root
+**In daily use** — `winvm start`, `winvm ssh`, `winvm stop` (142 unit tests and a root
 end-to-end test on a synthetic disk with the real geometry). The one hard problem on the way is written up below
 (*The 0x7B boot, solved*): worth reading if you try the same thing.
 
@@ -49,7 +49,7 @@ sudo ~/Projects/windows-vm/install.sh          # idempotent; --check reports dri
 
 Dependencies (all present on Garuda): `qemu`/`libvirt`/`virt-manager`/`virt-viewer`, `edk2-ovmf`, `samba`,
 `ntfs-3g`, `dosfstools`+`mtools`, `gptfdisk`, `hivex`. What it installs and how to undo it is in
-`install.sh`'s header and in KB `10-jxn-garuda.md` → *Windows-VM host side*.
+`install.sh`'s header.
 
 ## Everyday commands — `winvm`
 
@@ -76,8 +76,8 @@ Only one of the two VMs runs at a time — they share the real C:, and the pre-f
 
 `winvm console` opens the full Windows desktop in a window (keyboard + absolute-pointer tablet; the display is
 served on a local socket only). The window does **not** auto-resize and there is **no shared clipboard** —
-both need guest drivers/agents installed inside Windows (virtio-gpu + spice-vdagent), which the "limited
-Windows changes" rule excludes, so they are left as an owner decision. The in-VM resolution is set once in
+both need guest drivers/agents installed inside Windows (virtio-gpu + spice-vdagent), which this project deliberately does
+not install. The in-VM resolution is set once in
 OVMF's own menu and stored in the VM's nvram, not in Windows.
 
 ## Root/maintenance commands — `winvm-root` (sudo)
@@ -162,7 +162,7 @@ The root end-to-end test on a synthetic disk with the real geometry: `sudo pytho
 On Windows (PowerShell 5.1, no elevation, scratch keys and a scratch folder under `%TEMP%` only), the guard's own
 functions for real: policy save/apply/restore for both state.json shapes (A–C), Run parking across two VM boots (D),
 and Startup shortcuts keeping their folder's permissions through park → re-secure → restore, with a planted hard
-link restored untouched, and a junctioned Startup folder refused with nothing moved or written through it (E — its control proves the harness can see the 2026-10-17
+link restored untouched, and a junctioned Startup folder refused with nothing moved or written through it (E — its control proves the harness can see the junction
 trap):
 `powershell -NoProfile -ExecutionPolicy Bypass -File guest\test-guard-policies.ps1 [-Guard <guard.ps1>]` (exit 0 =
 all PASS). `-Guard` points it at another copy, e.g. the installed `C:\ProgramData\jxn-vm\guard.ps1`.
