@@ -18,7 +18,7 @@ automation agents, updates) on a VM boot and restores them on the next real boot
 
 ## Status
 
-**In daily use** — `winvm start`, `winvm ssh`, `winvm stop` (142 unit tests and a root
+**In daily use** — `winvm start`, `winvm ssh`, `winvm stop` (unit tests and a root
 end-to-end test on a synthetic disk with the real geometry). The one hard problem on the way is written up below
 (*The 0x7B boot, solved*): worth reading if you try the same thing.
 
