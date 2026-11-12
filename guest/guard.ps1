@@ -1,24 +1,24 @@
-<#  windows-vm VM-mode guard  (plan D4, traps T8/T9/T13)
+<#  windows-vm VM-mode guard
     Runs as SYSTEM at every boot (a scheduled task, ONSTART), BEFORE anyone logs in.
 
-    It detects whether this boot is the Windows-VM on Garuda (an SMBIOS marker the hardware never has) and:
+    It detects whether this boot is the Windows VM (an SMBIOS marker the hardware never has) and:
       * VM boot      -> SAVE the original state of every item it will touch (state.json written BEFORE any
                         change, so a restore is always possible), then SUPPRESS everything that would drive the
-                        real world or change the hardware Windows: non-Microsoft scheduled tasks (MatterLights,
-                        ambience-rgb, claude-rc, ...), non-Microsoft auto services, HKLM + user Run entries
-                        (HASS.Agent, Steam, ...), the user's Startup-folder shortcuts (Zebar, wtq), Windows
+                        real world or change the hardware Windows: non-Microsoft scheduled tasks (device and
+                        lighting daemons, ...), non-Microsoft auto services, HKLM + user Run entries
+                        (smart-home agents, game launchers, ...), the user's Startup-folder shortcuts, Windows
                         Update (its four services stopped - wuauserv/UsoSvc also disabled; WaaSMedicSvc and DoSvc
                         are protected and can only be stopped, and Medic re-enables wuauserv - so the two policy
                         values in $VmPolicies do the real blocking: NoAutoUpdate=1 (no automatic OS updates) and
                         the Store's AutoDownload=2 (no app auto-updates); Defender signatures still update); and
                         set DevicePasswordLessBuildVersion=0 so the password sign-in tile shows.
-      * Hardware boot-> RESTORE exactly what was saved, so the next real boot has the lights, HASS.Agent, Zebar
-                        and all autostarts back. A parked shortcut is given its Startup folder's file permissions
+      * Hardware boot-> RESTORE exactly what was saved, so the next real boot has its tasks, services
+                        and autostarts back. A parked shortcut is given its Startup folder's file permissions
                         while it is still in the park, before it goes back (Unpark-File - else the owner's
                         Explorer cannot read it).
       * Unsure (can't read the marker) -> do NOTHING and log loudly (never make the hardware worse).
 
-    It never touches the Windows Hello PIN (owner rule T10) and never runs Windows Update.
+    It never touches the Windows Hello PIN and never runs Windows Update.
     Idempotent. State + log live in C:\ProgramData\jxn-vm\. The log says what HAPPENED (a protected service is logged
     as 'stopped only', never as disabled). Policy round-trip, for real: test-guard-policies.ps1 (beside this file).
 
@@ -35,9 +35,9 @@ $LogFile     = Join-Path $Root 'guard.log'
 $RunPark     = 'HKLM:\SOFTWARE\jxn-vm\suppressed'        # parked Run VALUES live in the registry
 $StartupPark = Join-Path $Root 'suppressed-startup'      # parked Startup .lnk FILES live on disk
 $GuardTaskName = 'jxn-vm-guard'                          # this guard's own task - never disable it
-$ProfilePath = 'C:\Users\jxnpe'                          # fallback: the rig's owner profile (jxn)
-# The real owner profile is recorded by install-guard.ps1 (owner.json): the laptop's is C:\Users\jxn, and a guard
-# that hard-coded the rig's never saw the laptop owner's Run keys or Startup folder (found 2026-10-12).
+$ProfilePath = 'C:\Users\jxnpe'                          # fallback if owner.json is missing
+# The real owner profile is recorded by install-guard.ps1 (owner.json), so the guard finds that user's Run keys and
+# Startup folder on any machine.
 try { $o = Get-Content (Join-Path 'C:\ProgramData\jxn-vm' 'owner.json') -Raw -ErrorAction Stop | ConvertFrom-Json
       if($o.ProfilePath -and (Test-Path $o.ProfilePath)){ $ProfilePath = $o.ProfilePath } } catch { }
 $UserHiveMnt = 'HKU\jxn-vm-user'                         # temp mount for the owner's hive when not logged in
@@ -47,8 +47,8 @@ $KeepServices = @('sshd','ssh-agent','Tailscale','WinDefend','WdNisSvc','Securit
 $WUServices   = @('wuauserv','UsoSvc','WaaSMedicSvc','DoSvc')
 # Policy values set in VM mode and put back on the hardware restore - the ONE place for them (plan, apply and restore
 # all walk this table). Why the Store one: WaaSMedicSvc and DoSvc are protected (the service manager refuses to
-# disable them), Medic puts wuauserv back, and on 2026-10-11 22:10 the Store pulled 20 app updates inside the VM ten
-# minutes after boot. NoAutoUpdate still blocks OS updates; Defender's signature updates stay on (by design).
+# disable them), Medic puts wuauserv back, and the Store would pull app updates inside the VM minutes after boot.
+# NoAutoUpdate still blocks OS updates; Defender's signature updates stay on (by design).
 $VmPolicies = [ordered]@{
   NoAutoUpdate      = @{ key='HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'; name='NoAutoUpdate'; vm=1 }
   StoreAutoDownload = @{ key='HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore'; name='AutoDownload'; vm=2 }
@@ -66,7 +66,7 @@ function Secure-Root([string]$path){
   $sys=[System.Security.Principal.SecurityIdentifier]'S-1-5-18'
   $adm=[System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
   # Written ONLY when it is not already the locked ACL: every Set-Acl on a folder re-propagates down its tree, and
-  # doing that at every boot is what stripped the parked shortcuts' Startup permissions (2026-10-17). $true = rewritten.
+  # doing that at every boot is what stripped the parked shortcuts' Startup permissions. $true = rewritten.
   $acl = Get-Acl -Path $path
   $acl.SetAccessRuleProtection($true,$false)
   foreach($r in @($acl.Access)){ [void]$acl.RemoveAccessRule($r) }
@@ -125,8 +125,8 @@ function Binpath([string]$pathName){ (($pathName -replace '^"','') -replace '".*
 
 # =========================================================================================================
 # Create a registry key ONLY if it is missing. NEVER `New-Item -Path <key> -Force` on a key that may exist: the registry
-# provider then deletes all its values and subkeys and recreates it empty. That destroyed the rig's parked Run entries
-# (2026-10-09 12:47, the second VM boot in a row) - tests/test_guard_static.py forbids the forced form.
+# provider then deletes all its values and subkeys and recreates it empty. That would destroy the parked Run entries
+# on a second VM boot in a row - tests/test_guard_static.py forbids the forced form.
 function Ensure-Key([string]$k){ if(-not (Test-Path -LiteralPath $k)){ New-Item -Path $k -Force | Out-Null } }
 
 # The current value of a policy as {had, value} (had=$false: the value does not exist).
@@ -140,7 +140,7 @@ function Set-VmPolicy([string]$id){
   Log "policy $id : $($p.name)=$($p.vm)"
 }
 # The original {had, value} saved for policy $id, from either state shape: state.policies (this guard) or the
-# NoAutoUpdate_prev that guards before 2026-10-12 wrote into state.wu. $null = nothing saved.
+# NoAutoUpdate_prev that older guards wrote into state.wu. $null = nothing saved.
 function Saved-Policy($state, [string]$id){
   if($state.PSObject.Properties.Name -contains 'policies' -and $state.policies.PSObject.Properties.Name -contains $id){ return $state.policies.$id }
   if($id -eq 'NoAutoUpdate' -and $state.wu.PSObject.Properties.Name -contains 'NoAutoUpdate_prev'){
@@ -270,9 +270,8 @@ function Move-StartupAway([string]$dir,[string]$label){
 # A same-volume Move-Item is a RENAME: the file keeps the security descriptor it had and never gets its new folder's
 # inherited permissions (Explorer adds those by hand; MoveFileEx does not). Secure-Root used to rewrite $Root's
 # SYSTEM+Administrators-only ACL at every guard start, which re-propagated it onto every parked shortcut, and the restore
-# carried exactly that back into Startup: the owner's unelevated Explorer could not read zebar.exe.lnk / Tailscale.lnk /
-# Brother iPSMonitor.lnk and skipped them without a word (the rig's first hardware boot after the VM, 2026-10-17).
-# Shortcuts with an EXPLICIT owner ACE (wtq, the AHK scripts) survived - which is why only some went missing.
+# carried exactly that back into Startup: the owner's unelevated Explorer could not read the shortcuts and skipped them
+# without a word. Shortcuts with an EXPLICIT owner ACE survived, so only some went missing.
 # So Unpark-File gives a shortcut its Startup folder's file permissions (as explicit ACEs) while it is still in the park,
 # then renames it back. SYSTEM never writes a DACL inside a Startup folder: the owner can write there unelevated, and a
 # hard link or symlink planted there would aim a SYSTEM ACL write at a file of their choosing. The ACL write is on the
@@ -363,8 +362,7 @@ function Restore {
 function Start-Restored($state){
   # The restore runs at boot, but a boot that RESTORES has already passed its auto-start points while everything was
   # still suppressed: the service manager skipped the (then Disabled) services, boot-triggered tasks missed the boot,
-  # and an owner who logged on before this finished (T27 - the laptop, 2026-10-12: no Zebar, wtq, Windhawk, tunnel)
-  # got no logon autostarts. So start them now - services and boot tasks always, logon items only for a logged-on owner.
+  # and an owner who logged on before this finished got no logon autostarts. So start them now - services and boot tasks always, logon items only for a logged-on owner.
   foreach($n in $state.services.PSObject.Properties.Name){
     if((Norm $state.services.$n) -eq 'Automatic'){ try { Start-Service -Name $n -ErrorAction Stop; Log "started (restored auto service): $n" } catch { Log "WARN start svc $n : $($_.Exception.Message)" } }
   }
@@ -380,19 +378,19 @@ function Start-Restored($state){
     if($trig -match 'Boot' -or ($loggedOn -and $trig -match 'Logon')){
       try { Start-ScheduledTask -TaskName $name -TaskPath $path -ErrorAction Stop; Log "started (restored task, missed its trigger): $id" } catch { Log "WARN start task $id : $($_.Exception.Message)" } }
   }
-  # Direct-launch the restored Startup/Run items ONLY when the owner logged on BEFORE they were restored (T27: Explorer
+  # Direct-launch the restored Startup/Run items ONLY when the owner logged on BEFORE they were restored (Explorer
   # already processed Startup/Run while they were still parked, so it missed them). If the owner logs on AFTER the
   # restore, Explorer runs them itself, and launching here too starts a SECOND copy -- the start-menu-reveal
-  # "could not close the previous instance" dialog, 2026-10-28. Skip ONLY when we KNOW Explorer started after the
+  # "could not close the previous instance" dialog. Skip ONLY when we KNOW Explorer started after the
   # restore; any uncertainty errs toward launching, because a missed autostart is worse than a duplicate.
   $explorerAfterRestore = $loggedOn -and $ownerExplorerStart -and $script:restoreStamp -and ($ownerExplorerStart -ge $script:restoreStamp)
   if($loggedOn -and $script:RestoredLaunch.Count -gt 0 -and -not $explorerAfterRestore){
     # Startup .lnks and Run command lines must start INSIDE the owner's session: a one-shot task as the owner.
     # conhost --headless, never powershell -WindowStyle Hidden: Windows Terminal (the default terminal) ignores
-    # SW_HIDE and flashes a window on the owner's screen (seen 2026-10-12).
+    # SW_HIDE and flashes a window on the owner's screen.
     # A Run value is a raw command line whose program is often an UNQUOTED path with spaces (C:\Program Files\...).
     # `start "" <value>` (the old way) handed that to cmd's start, which split it at the first space and failed with
-    # "Windows cannot find 'C:\Program'" at boot (2026-10-28). Split-RunCommand separates the program from its arguments
+    # "Windows cannot find 'C:\Program'" at boot. Split-RunCommand separates the program from its arguments
     # (quoted, or the longest leading prefix that is a real file - the same resolution Windows' Run key does) and
     # Start-Process launches it. The split runs in the OWNER's context so %APPDATA% etc. expand correctly. A .lnk goes
     # straight to Start-Process, which resolves the shortcut.
@@ -478,8 +476,8 @@ Log "guard start: Mode=$Mode kind=$kind"
 if($RootRewritten -is [string]){ Log "WARN Secure-Root $RootRewritten" }
 elseif($RootRewritten){ Log "Secure-Root: $Root was not locked - ACL rewritten (this propagates onto the park)" }
 else { Log "Secure-Root: $Root already locked (unchanged)" }
-# PreventDeviceEncryption=1 (D3/T4): permanent, both hardware and VM. Stops Windows auto-encrypting C: on the
-# hardware (which would break the whole VM scheme and Garuda reading C:). Needs SYSTEM - works from the boot task.
+# PreventDeviceEncryption=1: permanent, both hardware and VM. Stops Windows auto-encrypting C: on the
+# hardware (which would break the whole VM scheme and the host reading C:). Needs SYSTEM - works from the boot task.
 try {
   $bl='HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
   if(-not (Test-Path $bl)){ New-Item -Path $bl -Force | Out-Null }

@@ -91,7 +91,7 @@ class PrivateEsp(unittest.TestCase):
         with self.assertRaisesRegex(esp.EspError, "unexpected file"):
             esp.verify(self.img, self.real, "pw-for-tests")
 
-    def test_verify_catches_stale_content(self):  # T7: the real boot manager changed since the image was built
+    def test_verify_catches_stale_content(self):  # the real boot manager changed since the image was built
         (self.real / "EFI/Microsoft/Boot/bootmgfw.efi").write_bytes(b"MZ updated boot manager")
         with self.assertRaisesRegex(esp.EspError, "content differs|not a copy"):
             esp.verify(self.img, self.real, "pw-for-tests")
@@ -182,7 +182,7 @@ class NtfsParsing(unittest.TestCase):
         self.assertEqual(ntfs.listdir("/dev/x", "/d", run=FakeRun(0, b".\n..\nSources\n")), ["Sources"])
         self.assertIsNone(ntfs.listdir("/dev/x", "/d", run=FakeRun(1, err=b"Couldn't find path")))
         # ntfs-3g 2022+ (Arch/EndeavourOS): `ntfsls /NoSuchDir` -> exit 3, EMPTY stderr. Must read as absent,
-        # not as an error, or every absent-path pre-flight check (no-feature-update, ...) false-fails (Legion).
+        # not as an error, or every absent-path pre-flight check (no-feature-update, ...) false-fails.
         self.assertIsNone(ntfs.listdir("/dev/x", "/d", run=FakeRun(3, err=b"")))
         with self.assertRaises(ntfs.NtfsError):  # a real failure DOES print to stderr - must still raise
             ntfs.listdir("/dev/x", "/d", run=FakeRun(1, err=b"Permission denied"))

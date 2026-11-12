@@ -3,7 +3,7 @@
 `domain_xml()` generates; `audit()` checks any domain XML against the safety rules. The audit runs in the tests,
 at install time, AND in the libvirt hook on every `prepare` (libvirt hands the hook the live XML on stdin), so a
 domain edited later in virt-manager - a TPM added, the real disk attached, Secure Boot switched on - refuses to
-start instead of quietly breaking a rule. Each rule names the plan trap it closes.
+start instead of quietly breaking a rule. Each rule closes one way the real C: could be damaged.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ HYPERV = """
 
 
 def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str:
-    """The domain definition. `marker=False` exists only for the guard's restore test (P3): the same VM
+    """The domain definition. `marker=False` exists only for the guard's restore test: the same VM
     without the SMBIOS marker looks like the hardware to the guard."""
     if domain not in config.DOMAINS:
         raise ValueError(domain)
@@ -144,7 +144,7 @@ def domain_xml(domain: str, marker: bool = True, uuid: str | None = None) -> str
 
 
 def network_xml(uuid: str | None = None) -> str:
-    """The `default` NAT network: fixed lease for the VM, the Windows Update sinkhole (T26)."""
+    """The `default` NAT network: fixed lease for the VM, the Windows Update sinkhole."""
     opts = "\n".join(f"    <dnsmasq:option value='local=/{d}/'/>" for d in config.WU_SINKHOLE)
     uuid_el = f"\n  <uuid>{uuid}</uuid>" if uuid else ""
     return f"""<network xmlns:dnsmasq='{DNSMASQ_NS}'>
@@ -182,34 +182,34 @@ def audit(xml_text: str, domain: str) -> list[str]:
     dev = root.find("devices")
     if dev is None:
         return p + ["no <devices>"]
-    # T4 / D3: no TPM, no Secure Boot
+    # no TPM, no Secure Boot
     if dev.find("tpm") is not None:
-        p.append("a TPM is attached (T4: BitLocker could seal to it)")
+        p.append("a TPM is attached (BitLocker could seal to it)")
     os_el = root.find("os")
     loader = os_el.find("loader") if os_el is not None else None
     if loader is None or (loader.text or "").strip() != str(config.OVMF_CODE):
         p.append(f"firmware must be {config.OVMF_CODE} (no Secure Boot build)")
     elif loader.get("secure", "no") != "no":
-        p.append("Secure Boot is on (D3)")
+        p.append("Secure Boot is on")
     if os_el is not None and os_el.get("firmware") == "efi":
         fw = os_el.find("firmware")
         for f in (fw.findall("feature") if fw is not None else []):
             if f.get("name") == "secure-boot" and f.get("enabled") == "yes":
-                p.append("Secure Boot is on (D3)")
+                p.append("Secure Boot is on")
     nv = os_el.find("nvram") if os_el is not None else None
     if nv is None or (nv.text or "").strip() != str(config.NVRAM[domain]):
-        p.append(f"nvram must be {config.NVRAM[domain]} (inside the state subvolume, T16)")
-    # T3: no S3/S4
+        p.append(f"nvram must be {config.NVRAM[domain]} (inside the state subvolume)")
+    # no S3/S4
     pm = root.find("pm")
     for tag in ("suspend-to-mem", "suspend-to-disk"):
         el = pm.find(tag) if pm is not None else None
         if el is None or el.get("enabled") != "no":
-            p.append(f"<pm><{tag} enabled='no'/> missing (T3: Windows could sleep/hibernate in the VM)")
-    # T24: no nested virtualisation; save/migration blocked by invtsc
+            p.append(f"<pm><{tag} enabled='no'/> missing (Windows could sleep/hibernate in the VM)")
+    # no nested virtualisation; save/migration blocked by invtsc
     cpu = root.find("cpu")
     feats = {f.get("name"): f.get("policy") for f in (cpu.findall("feature") if cpu is not None else [])}
     if feats.get("svm") != "disable":
-        p.append("svm is not disabled (T24: Hyper-V/VBS would start inside the VM)")
+        p.append("svm is not disabled (Hyper-V/VBS would start inside the VM)")
     if feats.get("invtsc") != "require":
         p.append("invtsc not required (it is what makes QEMU refuse any save/suspend-to-file of this VM)")
     if cpu is None or cpu.get("migratable") != "off":
@@ -232,7 +232,7 @@ def audit(xml_text: str, domain: str) -> list[str]:
                      "inbox stornvme/storahci driver. virtio has no inbox driver")
         bio = d.find("blockio")
         if bio is None or bio.get("logical_block_size") != "512":
-            p.append("disk logical block size must be 512 (T17)")
+            p.append("disk logical block size must be 512")
         srcs = [s.get("dev") or s.get("file") or "" for s in d.iter("source")]
         if domain == config.DOMAIN:
             if d.get("type") != "block" or srcs != [want_dm]:
@@ -248,38 +248,38 @@ def audit(xml_text: str, domain: str) -> list[str]:
                 p.append("the test disk has no backing store - writes would hit the real disk")
         for s in srcs:
             if s != want_dm and any(s.startswith(f) for f in FORBIDDEN_SOURCES):
-                p.append(f"forbidden disk source {s} (T1)")
+                p.append(f"forbidden disk source {s}")
     for tag in ("hostdev", "filesystem", "redirdev", "smartcard"):
         if dev.find(tag) is not None:
             p.append(f"<{tag}> attached - nothing of the host may be passed through")
-    # T30: a blue screen stops the VM (with its code + parameters in libvirt's log) instead of rebooting into
+    # a blue screen stops the VM (with its code + parameters in libvirt's log) instead of rebooting into
     # Windows' Automatic Repair, which would "repair" the REAL C:
     if not any(pn.get("model") == "hyperv" for pn in dev.findall("panic")):
-        p.append("no <panic model='hyperv'/> device (T30: crashes must be caught, logged and stop the VM)")
-    # T30: a crashed VM must never REBOOT (that would run Automatic Repair against the real C:). destroy,
+        p.append("no <panic model='hyperv'/> device (crashes must be caught, logged and stop the VM)")
+    # a crashed VM must never REBOOT (that would run Automatic Repair against the real C:). destroy,
     # preserve and the coredump-*-destroy variants all stop instead of rebooting; preserve freezes the BSOD
     # on screen for diagnosis. restart/coredump-restart are refused.
     if root.findtext("on_crash") not in ("destroy", "preserve", "coredump-destroy"):
-        p.append("on_crash must be destroy/preserve/coredump-destroy (T30: a crashed VM must never reboot into Automatic Repair)")
-    # T26/D5: the network, fixed MAC
+        p.append("on_crash must be destroy/preserve/coredump-destroy (a crashed VM must never reboot into Automatic Repair)")
+    # the network, fixed MAC
     ifs = dev.findall("interface")
     if len(ifs) != 1:
         p.append(f"{len(ifs)} network interfaces, expected 1")
     for i in ifs:
         src = i.find("source")
         if i.get("type") != "network" or src is None or src.get("network") != config.NETWORK:
-            p.append("the NIC must be on the libvirt 'default' NAT network (never bridged onto the LAN: .3 is Garuda's)")
+            p.append("the NIC must be on the libvirt 'default' NAT network (never bridged onto the LAN)")
         mac = i.find("mac")
         if mac is None or mac.get("address", "").lower() != config.MAC:
             p.append(f"the NIC MAC must be {config.MAC} (its fixed lease is {config.GUEST_IP})")
-    # display: local socket only (D6, no RDP, nothing on the LAN)
+    # display: local socket only (no RDP, nothing on the LAN)
     for g in dev.findall("graphics"):
         lst = g.find("listen")
         if lst is None or lst.get("type") not in ("socket", "none"):
             p.append(f"{g.get('type')} display listens on a network address; it must be a local socket")
-    # T8: the persistent domain must carry the marker (the test domain may omit it for the restore test)
+    # the persistent domain must carry the marker (the test domain may omit it for the restore test)
     if domain == config.DOMAIN and not has_marker(root):
-        p.append("the SMBIOS marker is missing - the guard would treat the VM as the hardware (T8)")
+        p.append("the SMBIOS marker is missing - the guard would treat the VM as the hardware")
     return p
 
 
@@ -311,5 +311,5 @@ def audit_network(xml_text: str) -> list[str]:
     opts = {o.get("value") for o in root.iter(f"{{{DNSMASQ_NS}}}option")}
     for d in config.WU_SINKHOLE:
         if f"local=/{d}/" not in opts:
-            p.append(f"Windows Update sinkhole missing for {d} (T26)")
+            p.append(f"Windows Update sinkhole missing for {d}")
     return p

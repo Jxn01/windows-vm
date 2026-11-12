@@ -1,4 +1,4 @@
-"""Shared test fixtures: the real disk's GPT sectors (captured read-only in P1) and mutators for them."""
+"""Shared test fixtures: the real disk's GPT sectors (captured read-only) and mutators for them."""
 
 from __future__ import annotations
 

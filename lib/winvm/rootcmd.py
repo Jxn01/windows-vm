@@ -10,14 +10,14 @@
     winvm-root teardown DOMAIN                remove a leftover assembled disk (only when the domain is off)
     winvm-root define [--test-no-marker]      audit + (re)define the network and both domains, keeping their
                                               UUIDs; --test-no-marker defines windows-test WITHOUT the SMBIOS
-                                              marker (only for the guard's restore test, P3)
-    winvm-root inspect start|stop|cat P|ls P  read the throwaway overlay's C: from Garuda (both VMs off): the
+                                              marker (only for the guard's restore test)
+    winvm-root inspect start|stop|cat P|ls P  read the throwaway overlay's C: from the host (both VMs off): the
                                               read-only disk is assembled, the overlay attached with qemu-nbd
                                               (no partition scan) and C:'s region exposed as a read-only loop
                                               device for ntfs-3g's offline readers. For logs a failed test boot
                                               left behind (SrtTrail.txt, event logs, the guard's log).
     winvm-root destroy-test                   destroy windows-test if it runs (windows-vm-test-guard.service,
-                                              at Garuda's shutdown - never called from the hook)
+                                              at host shutdown - never called from the hook)
 
 The hook acts only on the two domains it owns and ignores every other domain. On `prepare` it audits the XML,
 runs the pre-flight and assembles the disk; any failure exits 1, which makes libvirt abort the start. On
@@ -84,7 +84,7 @@ def fingerprint(lay: layout.Layout) -> str:
     """sha256 of C:'s $LogFile restart area: changes whenever Windows has written to C: (any boot, any OS)."""
     pr = RealProbe()
     cdev = pr.partuuid_path(lay.part(lay.windows_partition).unique_guid)
-    pr.flush(cdev)  # T28: never fingerprint pages cached before a VM wrote C:
+    pr.flush(cdev)  # never fingerprint pages cached before a VM wrote C:
     head = ntfs.file_head(cdev, "$LogFile", 8192)
     if not head or len(head) != 8192:
         raise ntfs.NtfsError("could not read C:'s $LogFile restart area")
@@ -273,7 +273,7 @@ def inspect(rest: list[str]) -> int:
             return 1
         subprocess.run(["modprobe", "nbd", "max_part=0", "nbds_max=4"], check=True)
         # The dm is ALWAYS read-only; the overlay qcow2 captures every write. The real C: (p5) is never
-        # written or mounted here - only this throwaway overlay is, which is exactly the goal's rule.
+        # written or mounted here - only this throwaway overlay is.
         dm.build(config.TEST_DOMAIN, lay, smb_password(), log=lambda m: print(m))
         if not config.OVERLAY.exists():
             overlay_new(lay)

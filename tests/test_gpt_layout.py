@@ -60,7 +60,7 @@ class GptParse(unittest.TestCase):
 class Blanking(unittest.TestCase):
     def test_vm_images_keep_all_entries(self):
         # The VM GPT = the full real table (entries 1..6). Blanking entries 2/3 broke ARC partition numbering
-        # (multi(0)disk(0)rdisk(0)partition(5)) and bugchecked 0x7B - root cause, 2026-10-09. p2/p3 DATA is
+        # (multi(0)disk(0)rdisk(0)partition(5)) and bugchecked 0x7B. p2/p3 DATA is
         # zeroed by the dm, but their GPT ENTRIES stay so numbering matches the real disk.
         lay, t = real_layout(), real_table()
         head, tail, vm = layout.vm_images(lay, t)
@@ -162,7 +162,7 @@ class Layout(unittest.TestCase):
         esp_line = text.splitlines()[1]
         self.assertEqual(esp_line.split()[3], DEVICES["esp"])  # the private image, not a partition
 
-    def test_dm_table_rejects_kernel_names(self):  # T21: never /dev/nvme0n1p5, always major:minor
+    def test_dm_table_rejects_kernel_names(self):  # never /dev/nvme0n1p5, always major:minor
         bad = dict(DEVICES, part5="/dev/nvme0n1p5")
         with self.assertRaises(layout.LayoutError):
             layout.dm_table(real_layout(), bad)

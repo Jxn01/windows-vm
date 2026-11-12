@@ -3,9 +3,9 @@
 The VM's disk is stitched together from the real disk's partitions and two small images that hold the
 partition table: the *head* (protective MBR, primary GPT header, primary entry array) and the *tail* (backup
 entry array, backup header). Both are produced here from the real disk's own sectors, with only the entries
-that must not exist in the VM (Garuda's btrfs, FASTGAMES) blanked and every CRC recomputed. Nothing else in
+that must not exist in the VM (the host's btrfs root, FASTGAMES) blanked and every CRC recomputed. Nothing else in
 the table changes: disk GUID, partition numbers, GUIDs, LBAs and attributes stay byte-identical, which is what
-keeps Windows from "repairing" anything (plan trap T6).
+keeps Windows from "repairing" anything.
 
 `sgdisk` is deliberately NOT used to build the table; it is used by the tests and by `winvm layout verify` as an
 independent reader of what this module wrote, so the check is not the code checking itself.
@@ -170,7 +170,7 @@ def without(table: Table, numbers: set[int], head_sectors: int) -> tuple[bytes, 
     """Blank the given entry slots and return (head image, tail image, the resulting Table).
 
     The head image is `head_sectors` long: MBR + primary header + entries, zero-filled up to the first
-    partition. The slots are zeroed in place, so every other entry keeps its number (trap T6). All four CRCs
+    partition. The slots are zeroed in place, so every other entry keeps its number. All four CRCs
     are recomputed; nothing else changes.
     """
     sector = table.sector

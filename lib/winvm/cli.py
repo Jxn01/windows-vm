@@ -1,4 +1,4 @@
-"""`winvm`: run the REAL Windows (C:) as a VM on Garuda.
+"""`winvm`: run the REAL Windows (C:) as a VM.
 
     winvm start                 pre-flight, start the VM, wait for SSH
     winvm stop [--timeout S]    clean shutdown: SSH `shutdown /s /f /t 0`, else ACPI power button; waits (default
@@ -182,10 +182,10 @@ The VM-mode guard (inside Windows, C:\\ProgramData\\jxn-vm\\):
         & C:\\ProgramData\\jxn-vm\\guard.ps1 restore
   - Its log: C:\\ProgramData\\jxn-vm\\guard.log
 
-Rollback material on Garuda (taken in P0, ~/Dolgok/windows-vm-backup/, mode 700):
+Rollback material (the backup taken before first use, kept mode 700):
   - nvme0n1-gpt.sgdisk / .sfdisk   the partition table (never written by this tooling)
-  - esp-P0.tar + manifests         the real ESP (never written by this tooling)
-  - hives/                         SYSTEM, SOFTWARE, SAM, SECURITY, DEFAULT, NTUSER-jxnpe.DAT
+  - an ESP tar + manifests          the real ESP (never written by this tooling)
+  - hives/                         SYSTEM, SOFTWARE, SAM, SECURITY, DEFAULT, the user's NTUSER.DAT
   - tasks/                         C:\\Windows\\System32\\Tasks as it was
 
 A leftover assembled disk (only when both VMs are off): sudo {ROOT} teardown windows|windows-test

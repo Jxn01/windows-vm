@@ -7,8 +7,8 @@ build():
     4. resolve each mapped partition by PARTUUID to major:minor, re-checking it is that partition of that disk
     5. `dmsetup create` the identity table - read-only (`--readonly`) for windows-test
     6. PROVE it: the assembled disk's GPT parses and equals the VM table; the first MiB of every mapped segment
-       equals the real partition's first MiB (identity offsets, T6); for read-only, an O_WRONLY open of the
-       device FAILS (kernel-enforced, plan D7) and `blockdev --getro` is 1. Any failure tears everything down.
+       equals the real partition's first MiB (identity offsets); for read-only, an O_WRONLY open of the
+       device FAILS (kernel-enforced) and `blockdev --getro` is 1. Any failure tears everything down.
 
 teardown(): remove the dm device, detach exactly the loop devices whose backing file is one of OUR images.
 """
@@ -150,7 +150,7 @@ def prove(domain: str, lay: layout.Layout, vm_table: gpt.Table, readonly: bool) 
         probe = RealProbe()
         for p in lay.by_role("mapped"):
             real = probe.partuuid_path(p.unique_guid)
-            probe.flush(real)  # T28
+            probe.flush(real)  # drop cached pages first
             rfd = os.open(real, os.O_RDONLY | os.O_CLOEXEC)
             try:
                 want = os.pread(rfd, min(MIB, p.sectors * bs), 0)
@@ -167,17 +167,17 @@ def prove(domain: str, lay: layout.Layout, vm_table: gpt.Table, readonly: bool) 
 
 
 def zero_probe_sector(lay: layout.Layout) -> int:
-    """A sector inside a dm `zero` segment (Garuda's root region): a write there is discarded by the target even if
+    """A sector inside a dm `zero` segment (the host's root region): a write there is discarded by the target even if
     the read-only flag were broken, so the write test below can never change anything."""
     seg = next(s for s in layout.segments(lay) if s.kind == "zero")
     return seg.start + seg.length // 2
 
 
 def prove_write_refused(dev: str, lay: layout.Layout) -> None:
-    """Kernel-enforced read-only, proven by an actual write (plan D7).
+    """Kernel-enforced read-only, proven by an actual write.
 
     Current kernels let root OPEN a read-only block device for writing and refuse the WRITE itself (EPERM in
-    blkdev_write_iter) - measured 2026-10-09 on 7.1.9: the open succeeded. So the proof is a write of one sector
+    blkdev_write_iter) - on kernel 7.1.9 the open succeeded. So the proof is a write of one sector
     of zeros into a `zero` segment: harmless whatever happens, and it must fail with EPERM/EACCES/EROFS.
     """
     bs = lay.logical_block_size
@@ -220,7 +220,7 @@ def teardown(domain: str, log=print) -> None:
 
 
 def _flush_windows_partitions() -> None:
-    """After the VM is gone, drop whatever Garuda cached of the partitions it wrote (T28)."""
+    """After the VM is gone, drop whatever the host cached of the partitions it wrote."""
     try:
         lay = layout.load(config.LAYOUT_FILE)
     except (OSError, ValueError):

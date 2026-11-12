@@ -5,22 +5,22 @@ qemu hook runs it again on `prepare` as the enforcement - a start from virt-mana
 skip it. Each check returns a Check; `ok` is False for a refusal. A check that could not look (tool error,
 unreadable device) is a refusal too, never a pass.
 
-Checks, in order (traps from the plan in brackets):
-    disk            the recorded by-id disk exists and is a whole disk                         [T21]
-    fresh-reads     the disk's and the Windows partitions' page cache is invalidated first     [T28]
-    block-size      logical/physical sector size as recorded                                   [T17]
-    gpt             both GPT copies valid and identical to the recorded layout                 [GPT drift]
-    partitions      each recorded PARTUUID is that partition of THAT disk, start/size as recorded [T21]
-    not-in-use      no Windows-side partition is mounted, used as swap or claimed by anything  [T1]
-    no-vm-disk      no winvm-* device-mapper disk exists already (a sibling domain runs, or stale) [T1]
-    no-saved-state  no libvirt managed-save image of either domain                             [saved RAM]
-    hibernation     hiberfil.sys absent or its first page all zero                             [T2]
-    ntfs-clean      C:'s NTFS volume flags are 0 (not dirty, no chkdsk pending)                [T2]
-    no-servicing    no C:\\Windows\\WinSxS\\pending.xml                                        [T2]
-    no-feature-update  no $WINDOWS.~BT\\NewOS or $WINDOWS.~BT\\Sources\\SafeOS                [T2, T22]
-    ntfs-sector     NTFS sector size equals the disk's logical sector size                     [T17]
-    esp-source      /boot/efi is the recorded ESP and holds Windows Boot Manager and its BCD    [T5, T7]
-    state-dir       /var/lib/windows-vm is a btrfs subvolume with NOCOW                         [T16]
+Checks, in order:
+    disk            the recorded by-id disk exists and is a whole disk
+    fresh-reads     the disk's and the Windows partitions' page cache is invalidated first
+    block-size      logical/physical sector size as recorded
+    gpt             both GPT copies valid and identical to the recorded layout
+    partitions      each recorded PARTUUID is that partition of THAT disk, start/size as recorded
+    not-in-use      no Windows-side partition is mounted, used as swap or claimed by anything
+    no-vm-disk      no winvm-* device-mapper disk exists already (a sibling domain runs, or stale)
+    no-saved-state  no libvirt managed-save image of either domain
+    hibernation     hiberfil.sys absent or its first page all zero
+    ntfs-clean      C:'s NTFS volume flags are 0 (not dirty, no chkdsk pending)
+    no-servicing    no C:\\Windows\\WinSxS\\pending.xml
+    no-feature-update  no $WINDOWS.~BT\\NewOS or $WINDOWS.~BT\\Sources\\SafeOS
+    ntfs-sector     NTFS sector size equals the disk's logical sector size
+    esp-source      /boot/efi is the recorded ESP and holds Windows Boot Manager and its BCD
+    state-dir       /var/lib/windows-vm is a btrfs subvolume with NOCOW
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def run(probe, lay: layout.Layout) -> list[Check]:
     add("disk", True, f"{lay.by_id} -> {disk.name}")
 
     def fresh():
-        # T28: every read below must see the disk, not pages cached before a VM wrote underneath them
+        # every read below must see the disk, not pages cached before a VM wrote underneath them
         probe.flush(lay.by_id)
         for p in lay.parts:
             if p.windows_side and probe.resolve(probe.partuuid_path(p.unique_guid)) is not None:
@@ -102,7 +102,7 @@ def run(probe, lay: layout.Layout) -> list[Check]:
         problems = []
         for p in lay.parts:
             if not p.windows_side or p.number not in parts:
-                continue  # Garuda's root and the shared ESP are mounted by design and never mapped
+                continue  # the host's root and the shared ESP are mounted by design and never mapped
             bd = parts[p.number]
             if bd.majmin in mounted:
                 problems.append(f"p{p.number} ({p.what}) is MOUNTED")
@@ -162,7 +162,7 @@ def run(probe, lay: layout.Layout) -> list[Check]:
                 if any(n.lower() == "safeos" for n in src):
                     found.append("$WINDOWS.~BT\\Sources\\SafeOS")
         add("no-feature-update", not found, f"feature update in flight: {', '.join(found)}" if found else
-            ("no $WINDOWS.~BT" if top is None else "$WINDOWS.~BT is a leftover without NewOS/SafeOS (T22)"))
+            ("no $WINDOWS.~BT" if top is None else "$WINDOWS.~BT is a leftover without NewOS/SafeOS"))
     guarded("no-feature-update", feature_update)
 
     def esp():

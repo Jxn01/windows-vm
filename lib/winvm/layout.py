@@ -1,12 +1,12 @@
-"""The identity layout: which sector of the VM's disk is which sector of what (plan D1).
+"""The identity layout: which sector of the VM's disk is which sector of what.
 
-The VM's disk has exactly the real disk's size and partition table, minus the entries for Garuda's btrfs and
-FASTGAMES. Its sectors come from five kinds of source:
+The VM's disk has exactly the real disk's size and partition table — every entry kept, so partition numbers match
+(see `vm_images`) — while the host's own partitions read as zeros. Its sectors come from five kinds of source:
 
     head    the first sectors up to the first partition: protective MBR + primary GPT (an image file)
-    esp     the ESP's sectors: a PRIVATE image, never the real ESP (trap T5)
+    esp     the ESP's sectors: a PRIVATE image, never the real ESP
     mapped  MSR, C:, WinRE: dm `linear` onto the real partition at offset 0, so VM sector N == real sector N
-    zero    everything absent (Garuda, FASTGAMES, gaps): dm `zero` - reads give zeros, writes are dropped
+    zero    everything absent (host root, FASTGAMES, gaps): dm `zero` - reads give zeros, writes are dropped
     tail    the last sectors: backup GPT entries + backup header (an image file)
 
 This module is pure: it computes segments, the dm table text and the GPT images from a recorded layout and a
@@ -103,7 +103,7 @@ def load(path: str | Path) -> Layout:
 def validate(lay: Layout) -> None:
     """Internal consistency of a recorded layout (independent of any disk)."""
     if not lay.by_id.startswith("/dev/disk/by-id/"):
-        raise LayoutError("the disk must be addressed by /dev/disk/by-id (trap T21: kernel names move)")
+        raise LayoutError("the disk must be addressed by /dev/disk/by-id (kernel names move)")
     if len(lay.by_role("esp")) != 1:
         raise LayoutError("exactly one partition must have role 'esp'")
     if not lay.by_role("mapped"):
@@ -134,7 +134,7 @@ def drift(lay: Layout, table: gpt.Table, logical: int, physical: int) -> list[st
     """Every difference between the recorded layout and the live disk. Empty list == identical."""
     out = []
     if logical != lay.logical_block_size:
-        out.append(f"logical block size is {logical}, recorded {lay.logical_block_size} (trap T17)")
+        out.append(f"logical block size is {logical}, recorded {lay.logical_block_size}")
     if physical != lay.physical_block_size:
         out.append(f"physical block size is {physical}, recorded {lay.physical_block_size}")
     if table.total_sectors != lay.total_sectors:
@@ -212,7 +212,7 @@ def dm_table(lay: Layout, devices: dict[str, str]) -> str:
 
     `devices` maps "head", "esp", "tail" and "part<N>" (each mapped partition) to a "major:minor" string.
     Mapped partitions are addressed at offset 0 OF THE PARTITION (identity because the segment starts at the
-    partition's own LBA), so the kernel claims exactly those partitions and nothing else (trap T1).
+    partition's own LBA), so the kernel claims exactly those partitions and nothing else.
     """
     lines = []
     for s in segments(lay):
@@ -222,7 +222,7 @@ def dm_table(lay: Layout, devices: dict[str, str]) -> str:
         key = f"part{s.part}" if s.kind == "mapped" else s.kind
         dev = devices[key]
         if not _is_majmin(dev):
-            raise LayoutError(f"device for {key} must be major:minor, got {dev!r} (trap T21)")
+            raise LayoutError(f"device for {key} must be major:minor, got {dev!r}")
         lines.append(f"{s.start} {s.length} linear {dev} 0")
     return "\n".join(lines) + "\n"
 
@@ -235,11 +235,11 @@ def _is_majmin(s: str) -> bool:
 def vm_images(lay: Layout, table: gpt.Table) -> tuple[bytes, bytes, gpt.Table]:
     """(head image, tail image, the VM's table) = the FULL real partition table, byte-for-byte.
 
-    Every GPT entry is KEPT, including the 'absent' ones (p2 Garuda, p3 FASTGAMES). Only their DATA is a dm
+    Every GPT entry is KEPT, including the 'absent' ones (p2 the host's root, p3 FASTGAMES). Only their DATA is a dm
     'zero' target (see segments/dm_table), so no btrfs/FASTGAMES content ever reaches the VM, but the partition
     table the guest sees is identical to the real disk's.
 
-    🚨 Why entries must NOT be blanked (root cause of the 0x7B boot, found by memory dump 2026-10-09): Windows
+    Why entries must NOT be blanked (root cause of the 0x7B boot): Windows
     opens the boot volume by its ARC name `multi(0)disk(0)rdisk(0)partition(5)` (C: is GPT partition 5). winload
     emits `partition(5)` counting GPT slots, but the kernel's partmgr renumbers only the PRESENT partitions - so
     with slots 2/3 removed, C: became partition(3), `partition(5)` was not found, and the kernel bugchecked

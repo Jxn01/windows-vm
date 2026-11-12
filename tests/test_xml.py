@@ -29,7 +29,7 @@ class Generated(unittest.TestCase):
         self.assertEqual(xmlgen.audit(xmlgen.domain_xml(TEST, marker=False), TEST), [])
         self.assertEqual(xmlgen.audit_network(xmlgen.network_xml()), [])
 
-    def test_no_kernel_disk_names_anywhere(self):  # T21
+    def test_no_kernel_disk_names_anywhere(self):
         for d in config.DOMAINS:
             x = xmlgen.domain_xml(d)
             self.assertIsNone(re.search(r"/dev/(nvme\d|sd[a-z]|dm-\d|loop\d)", x), d)
@@ -67,10 +67,10 @@ class Audit(unittest.TestCase):
         p = xmlgen.audit(x, domain)
         self.assertTrue(any(text in m for m in p), f"{text!r} not in {p}")
 
-    def test_tpm(self):  # T4
+    def test_tpm(self):
         self.refused(RW, lambda r: ET.SubElement(r.find("devices"), "tpm", model="tpm-crb"), "TPM")
 
-    def test_secure_boot_loader(self):  # D3
+    def test_secure_boot_loader(self):
         def f(r):
             r.find("os/loader").set("secure", "yes")
         self.refused(RW, f, "Secure Boot")
@@ -80,18 +80,18 @@ class Audit(unittest.TestCase):
             r.find("os/loader").text = "/usr/share/edk2/x64/OVMF_CODE.secboot.4m.fd"
         self.refused(RW, f, "firmware must be")
 
-    def test_nvram_elsewhere(self):  # T16
+    def test_nvram_elsewhere(self):
         def f(r):
             r.find("os/nvram").text = "/var/lib/libvirt/qemu/nvram/windows_VARS.fd"
         self.refused(RW, f, "nvram")
 
-    def test_s3_s4(self):  # T3
+    def test_s3_s4(self):
         def f(r):
             r.remove(r.find("pm"))
         self.refused(RW, f, "suspend-to-mem")
         self.refused(RW, f, "suspend-to-disk")
 
-    def test_nested_virtualisation(self):  # T24
+    def test_nested_virtualisation(self):
         def f(r):
             for feat in r.findall("cpu/feature"):
                 if feat.get("name") == "svm":
@@ -111,12 +111,12 @@ class Audit(unittest.TestCase):
             r.find("clock").set("offset", "localtime")
         self.refused(RW, f, "utc")
 
-    def test_whole_real_disk_attached(self):  # T1
+    def test_whole_real_disk_attached(self):
         def f(r):
             r.find("devices/disk/source").set("dev", "/dev/disk/by-id/nvme-KINGSTON_SFYR2S4T0_50026B7283A6141C")
         self.refused(RW, f, "must be exactly")
 
-    def test_second_disk_shared_drive(self):  # T1: S:/G: as disks
+    def test_second_disk_shared_drive(self):  # S:/G: as disks
         def f(r):
             d = ET.SubElement(r.find("devices"), "disk", type="block", device="disk")
             ET.SubElement(d, "source", dev="/dev/sdg")
@@ -134,7 +134,7 @@ class Audit(unittest.TestCase):
             r.find("devices/disk/driver").set("type", "qcow2")
         self.refused(RW, f, "raw")
 
-    def test_test_domain_without_backing_store(self):  # D7: writes would hit the real disk
+    def test_test_domain_without_backing_store(self):  # writes would hit the real disk
         def f(r):
             disk = r.find("devices/disk")
             disk.remove(disk.find("backingStore"))
@@ -145,7 +145,7 @@ class Audit(unittest.TestCase):
             r.find("devices/disk/backingStore/source").set("dev", "/dev/mapper/winvm-rw")
         self.refused(TEST, f, "test disk must be")
 
-    def test_wrong_block_size(self):  # T17
+    def test_wrong_block_size(self):
         def f(r):
             r.find("devices/disk/blockio").set("logical_block_size", "4096")
         self.refused(RW, f, "512")
@@ -159,7 +159,7 @@ class Audit(unittest.TestCase):
         self.refused(RW, lambda r: ET.SubElement(r.find("devices"), "hostdev", mode="subsystem", type="usb"),
                      "hostdev")
 
-    def test_bridged_nic(self):  # .3 is Garuda's; the VM stays on NAT
+    def test_bridged_nic(self):  # the VM stays on NAT, never on the LAN
         def f(r):
             i = r.find("devices/interface")
             i.set("type", "bridge")
@@ -171,20 +171,20 @@ class Audit(unittest.TestCase):
             r.find("devices/interface/mac").set("address", "52:54:00:00:00:01")
         self.refused(RW, f, "MAC")
 
-    def test_display_on_the_network(self):  # D6: no remote display
+    def test_display_on_the_network(self):  # no remote display
         def f(r):
             g = r.find("devices/graphics")
             g.set("type", "vnc")
             g.find("listen").attrib = {"type": "address", "address": "0.0.0.0"}
         self.refused(RW, f, "local socket")
 
-    def test_no_panic_device(self):  # T30
+    def test_no_panic_device(self):
         def f(r):
             d = r.find("devices")
             d.remove(d.find("panic"))
         self.refused(RW, f, "panic")
 
-    def test_crash_reboots(self):  # T30
+    def test_crash_reboots(self):
         def f(r):
             r.find("on_crash").text = "restart"
         self.refused(RW, f, "on_crash")
@@ -193,7 +193,7 @@ class Audit(unittest.TestCase):
         x = edit(xmlgen.domain_xml(RW), lambda r: r.find("on_crash").__setattr__("text", "preserve"))
         self.assertEqual([m for m in xmlgen.audit(x, RW) if "on_crash" in m], [])
 
-    def test_marker_missing_on_persistent(self):  # T8
+    def test_marker_missing_on_persistent(self):
         def f(r):
             r.remove(r.find("sysinfo"))
         self.refused(RW, f, "marker")

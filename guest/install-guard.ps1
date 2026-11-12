@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param([switch]$Uninstall, [string]$ProfilePath = $env:USERPROFILE)
 # -ProfilePath: the OWNER's profile (whose Run keys / Startup folder the guard parks and restores). Default: the
-# profile of whoever runs this (run it as the owner). Recorded in owner.json - the guard used to hard-code the rig's.
+# profile of whoever runs this (run it as the owner). Recorded in owner.json.
 $ErrorActionPreference='Stop'
 $Root='C:\ProgramData\jxn-vm'; $TaskName='jxn-vm-guard'
 $Dest=Join-Path $Root 'guard.ps1'

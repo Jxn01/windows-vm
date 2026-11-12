@@ -1,4 +1,4 @@
-"""The VM's PRIVATE EFI system partition, rebuilt from the real one at every start (traps T5, T7).
+"""The VM's PRIVATE EFI system partition, rebuilt from the real one at every start.
 
 Contents, and nothing else:
     \\EFI\\Microsoft\\**          byte-identical copy of the real ESP's \\EFI\\Microsoft (Boot, Recovery, BCD, ...)
@@ -7,7 +7,7 @@ Contents, and nothing else:
                                  back to this path, so it must be Windows Boot Manager here.
     \\jxn-vm\\marker             "jxn-windows-vm-marker-v1" - a second VM-mode signal for the guard
     \\jxn-vm\\smb.cred           the VM's credential for \\\\192.168.122.1\\Shared (S:). Exists ONLY in this image,
-                                 so Windows can only ever read it while running as this VM (plan P1, D2).
+                                 so Windows can only ever read it while running as this VM.
 
 The image is FAT32 with its OWN volume ID (config.ESP_VOLUME_ID), never the real 772D-AEDF: two filesystems
 with one UUID would let udev point /dev/disk/by-uuid/772D-AEDF - by which fstab mounts /boot/efi - at the copy.

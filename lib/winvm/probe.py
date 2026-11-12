@@ -22,7 +22,7 @@ BTRFS_FIRST_FREE_OBJECTID = 256  # inode number of every subvolume's root direct
 
 @dataclass(frozen=True)
 class BlockDev:
-    name: str        # kernel name, e.g. nvme0n1p5 (informational only, trap T21)
+    name: str        # kernel name, e.g. nvme0n1p5 (informational only)
     majmin: str      # "259:5"
     parent: str      # kernel name of the whole disk ("" for a whole disk)
     partition: int   # partition number (0 for a whole disk)
@@ -52,11 +52,11 @@ class RealProbe:
         return BlockDev(name, majmin, parent, part, start, size)
 
     def flush(self, path: str) -> None:
-        """Drop the block device's cached pages before reading it (trap T28).
+        """Drop the block device's cached pages before reading it.
 
-        The VM writes C: through device-mapper, i.e. BELOW /dev/<disk>p5's page cache. Pages Garuda cached from
+        The VM writes C: through device-mapper, i.e. BELOW /dev/<disk>p5's page cache. Pages the host cached from
         an earlier read (ntfs-3g, the pre-flight, a fingerprint) are stale afterwards and would be served again -
-        a pre-flight judging yesterday's hiberfil.sys/$Volume/$LogFile. Garuda never writes these partitions, so
+        a pre-flight judging yesterday's hiberfil.sys/$Volume/$LogFile. The host never writes these partitions, so
         BLKFLSBUF only invalidates clean pages."""
         fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
         try:

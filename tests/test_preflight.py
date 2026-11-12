@@ -20,14 +20,14 @@ def part_dev(n: int, start: int, size: int) -> BlockDev:
 
 
 class FakeProbe:
-    """The real host as measured in P0/P1, every answer overridable."""
+    """A host with the recorded layout, every answer overridable."""
 
     def __init__(self):
         self.disk = DISK
         self.parts = {str(p.unique_guid): part_dev(p.number, p.first_lba, p.sectors) for p in LAY.parts}
         self.sizes = (512, 512)
         self.table = real_table()
-        self.mounted = {"259:2", "259:1"}  # Garuda's root and the ESP are mounted
+        self.mounted = {"259:2", "259:1"}  # the host's root and the ESP are mounted
         self.swaps: set[str] = set()
         self.holders_map: dict[str, list[str]] = {}
         self.dms = ["luks-something"]
@@ -123,7 +123,7 @@ class Preflight(unittest.TestCase):
                           "hibernation", "ntfs-clean", "ntfs-sector", "no-servicing", "no-feature-update",
                           "esp-source", "state-dir"])
 
-    def test_cache_invalidated_before_any_ntfs_read(self):  # T28
+    def test_cache_invalidated_before_any_ntfs_read(self):
         p = FakeProbe()
         preflight.run(p, LAY)
         first_read = p.events.index("ntfs read")
@@ -144,7 +144,7 @@ class Preflight(unittest.TestCase):
         p.disk = None
         self.assertRefuses(p, "disk")
 
-    def test_block_size(self):  # T17
+    def test_block_size(self):
         p = FakeProbe()
         p.sizes = (4096, 4096)
         self.assertRefuses(p, "block-size")
@@ -160,7 +160,7 @@ class Preflight(unittest.TestCase):
         p.raise_on["gpt"] = gpt.GptError("header CRC mismatch")
         self.assertRefuses(p, "gpt", "could not check")
 
-    def test_partuuid_on_another_disk(self):  # T21: a clone/USB disk carrying the same GUID
+    def test_partuuid_on_another_disk(self):  # a clone/USB disk carrying the same GUID
         p = FakeProbe()
         g = str(LAY.part(5).unique_guid)
         p.parts[g] = BlockDev("sdx5", "8:5", "sdx", 5, p.parts[g].start, p.parts[g].size)
@@ -172,7 +172,7 @@ class Preflight(unittest.TestCase):
         p.parts[g] = BlockDev("nvme0n1p6", "259:6", "nvme0n1", 6, p.parts[g].start, p.parts[g].size - 1)
         self.assertRefuses(p, "partitions", "p6")
 
-    def test_c_mounted(self):  # T1 / goal: prove the start refuses while C: is mounted
+    def test_c_mounted(self):  # prove the start refuses while C: is mounted
         p = FakeProbe()
         p.mounted.add("259:5")
         self.assertRefuses(p, "not-in-use", "p5")
@@ -207,7 +207,7 @@ class Preflight(unittest.TestCase):
         p.saved = ["windows"]
         self.assertRefuses(p, "no-saved-state", "windows")
 
-    def test_hibernated(self):  # T2
+    def test_hibernated(self):
         for sig in (b"hibr", b"HIBR", b"wake", b"RSTR"):
             p = FakeProbe()
             p.hiberfil = sig + bytes(4092)
@@ -223,7 +223,7 @@ class Preflight(unittest.TestCase):
         p.raise_on["hiberfil"] = ntfs.NtfsError("ntfscat failed")
         self.assertRefuses(p, "hibernation", "could not check")
 
-    def test_dirty(self):  # T2
+    def test_dirty(self):
         p = FakeProbe()
         p.volume = ntfs.VolumeInfo(0x0001, "3.1", 512)
         self.assertRefuses(p, "ntfs-clean", "dirty")
@@ -243,7 +243,7 @@ class Preflight(unittest.TestCase):
         p.volume = ntfs.VolumeInfo(0, "3.1", 4096)
         self.assertRefuses(p, "ntfs-sector")
 
-    def test_pending_xml(self):  # T2
+    def test_pending_xml(self):
         p = FakeProbe()
         p.dirs["/Windows/WinSxS"] = ["Manifests", "pending.xml"]
         self.assertRefuses(p, "no-servicing", "pending.xml")
@@ -253,7 +253,7 @@ class Preflight(unittest.TestCase):
         del p.dirs["/Windows/WinSxS"]
         self.assertRefuses(p, "no-servicing", "not found")
 
-    def test_feature_update_newos(self):  # T2/T22
+    def test_feature_update_newos(self):
         p = FakeProbe()
         p.dirs["/$WINDOWS.~BT"] = ["Sources", "NewOS"]
         self.assertRefuses(p, "no-feature-update", "NewOS")
@@ -263,7 +263,7 @@ class Preflight(unittest.TestCase):
         p.dirs["/$WINDOWS.~BT/Sources"] = ["SafeOS", "Panther"]
         self.assertRefuses(p, "no-feature-update", "SafeOS")
 
-    def test_bt_leftover_is_fine(self):  # T22: the real C: has exactly this leftover
+    def test_bt_leftover_is_fine(self):  # the real C: has exactly this leftover
         self.assertNotIn("no-feature-update", failing(FakeProbe()))
 
     def test_no_bt_is_fine(self):
@@ -286,7 +286,7 @@ class Preflight(unittest.TestCase):
         p.files.discard(config.STATE)
         self.assertRefuses(p, "state-dir", "does not exist")
 
-    def test_state_dir_not_nocow(self):  # T16
+    def test_state_dir_not_nocow(self):
         p = FakeProbe()
         p.subvol = (True, False)
         self.assertRefuses(p, "state-dir", "nocow=False")

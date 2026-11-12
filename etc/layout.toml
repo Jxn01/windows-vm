@@ -1,15 +1,15 @@
-# The real system disk exactly as recorded in P0 of the Windows-VM plan (2026-10-09, read live).
+# The real system disk's partition table, as read live.
 #
 # winvm compares the LIVE partition table against this file before every VM start and refuses on ANY
-# difference (plan trap: GPT drift). If the disk is repartitioned on purpose, re-record it with
+# difference (GPT drift). If the disk is repartitioned on purpose, re-record it with
 # `sudo winvm-root layout record > etc/layout.toml`, review the diff, commit, and reinstall.
 #
 # Roles:
-#   esp     -> the VM gets a PRIVATE copy at the same LBA/size (never the real ESP; trap T5)
-#   mapped  -> the VM's sector N is the real partition's sector N (dm linear, identity offsets; T6)
-#   absent  -> the entry is blanked in the VM's table and its sectors read as zeros (dm zero; T1)
+#   esp     -> the VM gets a PRIVATE copy at the same LBA/size (never the real ESP)
+#   mapped  -> the VM's sector N is the real partition's sector N (dm linear, identity offsets)
+#   absent  -> the entry is blanked in the VM's table and its sectors read as zeros (dm zero)
 # windows_side = true: a Windows partition; the pre-flight refuses while it is mounted, swap or claimed
-#   (Garuda's own root and the shared ESP are false - they are mounted by design and never mapped).
+#   (the host's own root and the shared ESP are false - they are mounted by design and never mapped).
 # Every partition on the disk must be listed; an unlisted one is drift.
 
 [disk]

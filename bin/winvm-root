@@ -2,7 +2,7 @@
 """winvm-root - the root half of winvm, and the libvirt qemu hook's entry point.
 
 ALWAYS runs the root-owned installed copy (/usr/local/lib/windows-vm), never code from the shared tree:
-~/Projects is on an NTFS drive that jxn and the Windows half can write, and root must not execute that.
+the project tree is on an NTFS drive that unprivileged users and Windows can write, and root must not execute that.
 """
 import sys
 

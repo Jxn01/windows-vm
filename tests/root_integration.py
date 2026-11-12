@@ -146,7 +146,7 @@ def main() -> int:
                 cached = os.pread(stale, 27, 4096)
                 os.close(stale)
                 check(cached != b"WRITTEN-THROUGH-THE-VM-DISK",
-                      "T28 reproduced: the partition's page cache still shows the OLD bytes after the VM write")
+                      "reproduced: the partition's page cache still shows the OLD bytes after the VM write")
                 RealProbe().flush(p5dev)
                 r = os.open(p5dev, os.O_RDONLY)
                 got = os.pread(r, 27, 4096)

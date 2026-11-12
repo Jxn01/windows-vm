@@ -1,7 +1,7 @@
 """Every file install.sh installs must also be compared by `install.sh --check`.
 
-On 2026-10-11 the laptop had no Windows-VM launchers or Desktop icons, and `--check` said nothing: step 11 installed
-them but the check block never looked at them. This test fails when an `install` destination has no matching `chk`.
+A step that installs files the check block never looks at would let `--check` report nothing for a missing launcher.
+This test fails when an `install` destination has no matching `chk`.
 """
 
 from __future__ import annotations

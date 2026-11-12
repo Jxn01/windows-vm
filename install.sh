@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh - install the windows-vm host tooling on Garuda (idempotent; run with sudo from the repo).
+# install.sh - install the windows-vm host tooling (idempotent; run with sudo from the repo).
 #
 #   sudo ./install.sh            install / update everything (refuses while a Windows VM runs)
 #   sudo ./install.sh --check    report what is installed and what differs, change nothing
@@ -13,9 +13,9 @@
 #   6. libvirt-guests: /etc/conf.d/libvirt-guests + drop-in; enabled. windows-vm-test-guard.service enabled
 #   7. libvirtd restarted (it only discovers hook scripts at start) - only while no VM runs
 #   8. network `default` + domains `windows`, `windows-test` audited and defined (winvm-root define)
-#   9. Samba: smb.conf replaced (old one kept once as smb.conf.pre-windows-vm), jxn's Samba password set from
+#   9. Samba: smb.conf replaced (old one kept once as smb.conf.pre-windows-vm), the install user's Samba password set from
 #      the generated file, nmb (NetBIOS) disabled, smbd restarted -> listens on 127.0.0.1 + 192.168.122.1 only
-#  10. for jxn: the `windows-vm` SSH alias and a known_hosts pin of Windows' own host key (read from C:)
+#  10. for the install user: the `windows-vm` SSH alias and a known_hosts pin of Windows' own host key (read from C:)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -54,7 +54,7 @@ if ((CHECK)); then
     chk "$REPO/etc/systemd/libvirt-guests-windows-vm.conf" /etc/systemd/system/libvirt-guests.service.d/windows-vm.conf
     chk "$REPO/etc/systemd/windows-vm-test-guard.service" /etc/systemd/system/windows-vm-test-guard.service
     chk "$REPO/etc/samba/smb.conf" /etc/samba/smb.conf
-    # step 11 — the launchers and the owner's Desktop icons (missing on the laptop until 2026-10-11 and nothing noticed)
+    # step 11 — the launchers and the Desktop icons
     chk "$REPO/bin/windows-vm-gui" /usr/local/bin/windows-vm-gui
     chk "$REPO/bin/windows-vm-stop-gui" /usr/local/bin/windows-vm-stop-gui
     dsk=$(sudo -u $OWNER xdg-user-dir DESKTOP 2>/dev/null); [ -d "$dsk" ] || dsk="$OWNER_HOME/Desktop"
@@ -169,8 +169,8 @@ if ! sudo -u $OWNER ssh-keygen -F windows-vm -f "$kh" >/dev/null 2>&1; then
         cdev=/dev/disk/by-partuuid/$(python3 -I -c 'import sys; sys.path.insert(0, "/usr/local/lib/windows-vm"); from winvm import layout; L = layout.load("/etc/windows-vm/layout.toml"); print(L.part(L.windows_partition).unique_guid)')
         n=0
         for k in ssh_host_ed25519_key.pub ssh_host_ecdsa_key.pub ssh_host_rsa_key.pub; do
-            # `|| true`: under `set -euo pipefail` one absent/unreadable key file aborted the WHOLE install here,
-            # so step 11 (the launchers + Desktop icons) never ran — the laptop had no icons for that reason
+            # `|| true`: under `set -euo pipefail` one absent/unreadable key file would abort the whole install
+            # before step 11 (the launchers + Desktop icons)
             key=$(ntfscat "$cdev" "/ProgramData/ssh/$k" 2>/dev/null | tr -d '\r' | awk '{print $1, $2}') || true
             if [[ -n "$key" ]]; then echo "windows-vm $key" >> "$kh"; n=$((n+1)); fi
         done

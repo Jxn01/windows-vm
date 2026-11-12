@@ -1,4 +1,4 @@
-"""Read-only NTFS facts about C: WITHOUT mounting it (goal rule: never mount p5 on Linux).
+"""Read-only NTFS facts about C: WITHOUT mounting it (the Windows partition is never mounted on Linux).
 
 ntfs-3g's offline tools open the partition device O_RDONLY and parse NTFS themselves:
     ntfsinfo -m DEV        volume information ("Volume Flags: 0x0000")
@@ -7,7 +7,7 @@ ntfs-3g's offline tools open the partition device O_RDONLY and parse NTFS themse
 
 Every function takes a `run` callable so the parsing is unit-tested on recorded outputs; the real runner is
 `subprocess`. A tool failure that is not a clean "no such file" is an ERROR, never "absent": a check that
-could not look must not read as "nothing there" (KB 20-working-rules: "cannot see is not is not there").
+could not look must not read as "nothing there".
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ def _looks_not_found(returncode: int, err: str) -> bool:
     """True if an ntfs-3g tool's non-zero exit means "the path does not exist".
 
     Two ntfs-3g families have to be covered, or an absent path is misread as a real I/O error:
-      - some builds print a message (matched by NOT_FOUND), e.g. Garuda's;
+      - some builds print a message (matched by NOT_FOUND);
       - ntfs-3g 2022+ on Arch/EndeavourOS exits non-zero (ntfsls: 3) with an EMPTY stderr for a missing
         path, while a genuine failure (dirty volume, bad open) always prints to stderr.
-    So a message match, OR a non-zero exit with no stderr at all, is "not found". Verified on the Legion:
+    So a message match, OR a non-zero exit with no stderr at all, is "not found":
     `ntfsls /NoSuchDir` -> exit 3, empty stderr; a dirty volume -> non-zero WITH text.
     """
     return returncode != 0 and (bool(NOT_FOUND.search(err)) or not err.strip())
@@ -119,7 +119,7 @@ def hibernation_state(head: bytes | None) -> str:
     """Classify hiberfil.sys's first page: 'absent', 'clear' (all zero) or the signature found.
 
     Windows writes 'hibr'/'HIBR' (hibernated), 'wake'/'WAKE' (resumed, not yet cleared), 'rstr'/'RSTR' or
-    'link' into the first bytes. Anything other than all-zero means "do not boot this elsewhere" (trap T2).
+    'link' into the first bytes. Anything other than all-zero means "do not boot this elsewhere".
     """
     if head is None:
         return "absent"

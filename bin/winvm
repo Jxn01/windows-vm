@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""winvm - run the real Windows (C:) as a VM on Garuda. See README.md / `winvm --help`."""
+"""winvm - run the real Windows (C:) as a VM. See README.md / `winvm --help`."""
 import sys
 from pathlib import Path
 

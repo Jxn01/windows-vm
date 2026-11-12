@@ -1,10 +1,8 @@
 """Static guards on guest/guard.ps1 + install-guard.ps1 (the PowerShell itself is exercised on the real Windows).
 
-2026-10-12, the laptop's first hardware boot after a VM session: the owner logged on two seconds before the guard's
-restore finished, so every logon autostart (Zebar, wtq, Windhawk's mods) was skipped for the whole session; restored
-services stayed stopped (the service manager had passed them while Disabled) and boot tasks (the EverLink tunnel)
-missed the boot. And the guard hard-coded the RIG's profile (C:\\Users\\jxnpe), so on the laptop it never parked or
-restored the owner's Run keys / Startup folder.
+The restore runs at boot, after the service manager and boot tasks have passed their triggers, so the guard starts
+restored services, boot tasks and logon autostarts itself; and it takes the owner's profile from owner.json instead of
+hard-coding one.
 """
 
 from __future__ import annotations
@@ -47,7 +45,7 @@ class GuardStartsWhatTheBootSkipped(unittest.TestCase):
 
     def test_run_values_are_split_not_started_via_cmd(self):
         # A Run value is a raw command line, often an UNQUOTED path with spaces (C:\Program Files\...). `start "" <value>`
-        # split it at the first space -> "Windows cannot find 'C:\Program'" at boot (2026-10-28). Split-RunCommand
+        # split it at the first space -> "Windows cannot find 'C:\Program'" at boot. Split-RunCommand
         # separates program from args the way Windows' Run key does, then Start-Process launches it.
         body = function_body(GUARD, "Start-Restored")
         self.assertNotIn('start `"`"', body)                       # the old, broken launch
@@ -82,9 +80,8 @@ if __name__ == "__main__":
 
 
 class GuardPolicyValuesRoundTrip(unittest.TestCase):
-    """2026-10-11 22:10, a VM boot: WaaSMedicSvc (protected - the service manager refuses to disable it, and DoSvc too)
-    had put wuauserv back, and the Microsoft Store pulled 20 app updates inside the VM ten minutes after boot - while
-    the guard's log said "WU stopped" for all four services. Every policy value the guard sets in VM mode now lives in
+    """WaaSMedicSvc (protected - the service manager refuses to disable it, and DoSvc too) puts wuauserv back, so the
+    Microsoft Store could pull app updates inside the VM while the guard's log said "WU stopped". Every policy value the guard sets in VM mode now lives in
     ONE table ($VmPolicies) that plan, apply and restore all walk, so a new one cannot be set without being restored."""
 
     def test_store_auto_download_is_a_vm_policy(self):
@@ -124,12 +121,9 @@ class GuardLogsWhatActuallyHappened(unittest.TestCase):
 
 
 class GuardNeverRecreatesARegistryKey(unittest.TestCase):
-    """2026-10-15: the rig's Run entries (Steam, Discord, Spotify, Everything, HASS.Agent, ...) were DESTROYED. In the
-    registry provider `New-Item -Path <existing key> -Force` deletes the key's values and subkeys and recreates it
-    empty. The guard did that to its park key (`New-Item -Path $RunPark -Force`) on every VM boot, so the second VM
-    boot in a row (10-09 12:47) wiped what the first (12:27) had parked; it also recreated the policy keys (losing
-    their other values) and the LIVE Run key on the hardware restore. Every registry key is now created only when
-    missing (Ensure-Key)."""
+    """In the registry provider `New-Item -Path <existing key> -Force` deletes the key's values and subkeys and recreates
+    it empty. Forcing it on the park key would wipe what the previous VM boot parked, and forcing it on the policy keys
+    or the LIVE Run key would lose their other values. Every registry key is created only when missing (Ensure-Key)."""
 
     def test_no_forced_registry_new_item(self):
         for name, src in (("guard.ps1", GUARD), ("install-guard.ps1", INSTALL)):
@@ -155,21 +149,18 @@ class GuardNeverRecreatesARegistryKey(unittest.TestCase):
 
 
 class GuardMovedFilesTakeTheirFoldersPermissions(unittest.TestCase):
-    """2026-10-17, the rig's first hardware boot since the guard's first VM boot (10-09): no Zebar, no Tailscale tray.
-    A same-volume Move-Item is a rename and keeps the file's security descriptor, and Secure-Root rewrote
-    C:\\ProgramData\\jxn-vm's SYSTEM+Administrators-only ACL at every guard start, which re-propagated onto the parked
-    shortcuts; the restore put zebar.exe.lnk, Tailscale.lnk and Brother iPSMonitor.lnk back into Startup unreadable to the
-    owner's unelevated Explorer, which skipped them silently. (wtq and the AHK shortcuts carry an explicit owner ACE.)
-    Now Secure-Root writes only when the ACL is wrong, and Unpark-File grants the folder's file permissions while the
+    """A same-volume Move-Item is a rename and keeps the file's security descriptor, and a Secure-Root that rewrote
+    C:\\ProgramData\\jxn-vm's SYSTEM+Administrators-only ACL at every guard start would re-propagate it onto the parked
+    shortcuts; the restore would then put them back into Startup unreadable to the owner's unelevated Explorer, which
+    skips them silently. So Secure-Root writes only when the ACL is wrong, and Unpark-File grants the folder's file permissions while the
     shortcut is still in the park. SYSTEM never writes an ACL inside a Startup folder (user-writable: a planted hard link
-    or symlink would aim the write elsewhere - the first fix's in-place repair did exactly that, found by review).
+    or symlink would aim the write elsewhere).
     Test-SafeDir refuses any Startup path with a reparse-point component (park source and restore destination), closing
     the STATIC junction vector. RESIDUAL, acknowledged not fixed: Test-SafeDir is check-then-use by path, so a
     sufficiently-timed junction swap during the pre-logon restore is still a race no re-check closes - it needs an
-    ENABLED non-admin account running code in that window. Measured on the rig 2026-10-19: every enabled account (jxn,
-    Vendeg) is an Administrator, so there is no principal to escalate; the laptop/future PCs are the reason it is recorded.
-    The class-killer (proposed to the owner, not built) is StartupApproved registry bytes instead of moving .lnk files -
-    no path, no TOCTOU, no ACL write. See KB 11-windows.md T33 / plan record 14."""
+    ENABLED non-admin account running code in that window; where every enabled account is an Administrator there is no
+    principal to escalate. A design without the race would flip StartupApproved registry bytes instead of moving .lnk
+    files - no path, no TOCTOU, no ACL write."""
 
     MOVE = re.compile(r"\bMove-Item\b")
     ACL_WRITE = re.compile(r"\b(Set-Acl|SetAccessControl|icacls)\b", re.I)

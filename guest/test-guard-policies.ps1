@@ -2,12 +2,11 @@
     Windows PowerShell 5.1 (the guard's runtime), any user, no elevation: it touches only HKCU:\Software\jxn-guard-test
     and a temp state file, never the real policies or C:\ProgramData\jxn-vm. Exit 0 = all PASS.
       powershell -NoProfile -ExecutionPolicy Bypass -File test-guard-policies.ps1 [-Guard <path to guard.ps1>]
-    Covers both state.json shapes: one written by a guard before 2026-10-12 (NoAutoUpdate_prev in .wu, no .policies)
+    Covers both state.json shapes: one written by an older guard (NoAutoUpdate_prev in .wu, no .policies)
     and the current one (.policies); that setting a policy keeps the key's OTHER values; and Run parking across two VM
-    boots in a row + a hardware restore into a Run key that already has values (2026-10-15: the old guard's
-    `New-Item -Force` wiped the parked Run entries on the second VM boot); and that a parked Startup shortcut comes back
-    with its folder's permissions, not the park's (2026-10-17: Zebar and the Tailscale tray did not start - section E,
-    in a scratch folder under %TEMP%). The Linux suite checks the same code statically (tests/test_guard_static.py).
+    boots in a row + a hardware restore into a Run key that already has values (a forced `New-Item` once wiped the
+    parked Run entries on the second VM boot); and that a parked Startup shortcut comes back
+    with its folder's permissions, not the park's (section E, in a scratch folder under %TEMP%). The Linux suite checks the same code statically (tests/test_guard_static.py).
 #>
 param([string]$Guard = (Join-Path $PSScriptRoot 'guard.ps1'))
 $ErrorActionPreference = 'Stop'
@@ -64,7 +63,7 @@ Ensure-Key $RunPark; Move-RunAway $run 'runUser'                       # 1st VM 
 Check 'D: 1st VM boot parked both values and emptied Run' ((@((Get-Item "$RunPark\runUser").GetValueNames()).Count -eq 2) -and (@((Get-Item $run).GetValueNames()).Count -eq 0))
 Ensure-Key $RunPark; Move-RunAway $run 'runUser'                       # 2nd VM boot in a row: Run is empty now
 $names = @((Get-Item "$RunPark\runUser").GetValueNames())
-Check 'D: 2nd VM boot in a row kept the parked values (the 2026-10-09 loss)' (($names -contains 'Steam') -and ($names -contains 'Spotify'))
+Check 'D: 2nd VM boot in a row kept the parked values' (($names -contains 'Steam') -and ($names -contains 'Spotify'))
 Check 'D: the value KIND survives parking (ExpandString)' ((Get-Item "$RunPark\runUser").GetValueKind('Spotify') -eq 'ExpandString')
 New-ItemProperty $run -Name OneDrive -Value 'C:\od.exe' -PropertyType String | Out-Null   # added while parked
 Restore-RunKey $run "$RunPark\runUser" 'runUser'                      # hardware restore
@@ -73,9 +72,9 @@ Check 'D: restore put Steam + Spotify back' (($live -contains 'Steam') -and ($li
 Check 'D: restore kept a value already in the live Run key' ($live -contains 'OneDrive')
 Check 'D: restored value text is exact' ((Get-Item $run).GetValue('Steam') -eq '"C:\Steam\steam.exe" -silent')
 
-# E. Startup .lnk parking keeps each folder's permissions (2026-10-17: zebar.exe.lnk came back from the park with the
-#    park's SYSTEM+Administrators-only DACL - a same-volume move keeps the security descriptor - so the owner's unelevated
-#    Explorer could not read it and skipped it; Tailscale.lnk and Brother iPSMonitor.lnk the same). Unelevated, in %TEMP%:
+# E. Startup .lnk parking keeps each folder's permissions (a shortcut that came back from the park with the park's
+#    SYSTEM+Administrators-only DACL - a same-volume move keeps the security descriptor - could not be read by the
+#    owner's unelevated Explorer, which skipped it). Unelevated, in %TEMP%:
 #    'Startup' grants me FullControl + Everyone ReadAndExecute (inheritable), 'root' plays the locked park (me only).
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $every = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
@@ -95,7 +94,7 @@ Lock-Dir $liveDir @($every); Lock-Dir $parkRoot @(); Lock-Dir $outside @()
 # control: the bare round trip the old guard did. If this does not lose the ACE, the harness cannot see the trap.
 'x' | Set-Content "$liveDir\bare.lnk"
 Move-Item "$liveDir\bare.lnk" "$parkRoot\bare.lnk"; Lock-Dir $parkRoot @(); Move-Item "$parkRoot\bare.lnk" "$liveDir\bare.lnk"
-Check 'E: control - a bare Move-Item round trip loses the Startup folder''s ACE (the 2026-10-17 trap is visible)' (-not (Everyone-Reads "$liveDir\bare.lnk"))
+Check 'E: control - a bare Move-Item round trip loses the Startup folder''s ACE (the trap is visible)' (-not (Everyone-Reads "$liveDir\bare.lnk"))
 Remove-Item "$liveDir\bare.lnk" -Force
 # the guard's own park + restore
 $StartupDirs = @{ user = $liveDir }; $StartupPark = "$parkRoot\suppressed-startup"; $RunPark = "$base\no-run-park"
@@ -109,7 +108,7 @@ Check 'E: setup - Link-Count sees 1 name for a plain file and 2 for the planted 
 Move-StartupAway $liveDir 'user'                                       # VM boot
 Check 'E: VM boot parked the shortcuts' ((Test-Path "$StartupPark\user\zebar.exe.lnk") -and (Test-Path "$StartupPark\user\planted.lnk") -and -not (Test-Path "$liveDir\zebar.exe.lnk"))
 Lock-Dir $parkRoot @()                                                 # what the old guard start did: strip the parked files
-Check 'E: setup - the parked shortcut lost the Everyone ACE (the damaged state the rig is in)' (-not (Everyone-Reads "$StartupPark\user\zebar.exe.lnk"))
+Check 'E: setup - the parked shortcut lost the Everyone ACE (the damaged state)' (-not (Everyone-Reads "$StartupPark\user\zebar.exe.lnk"))
 $targetBefore = (Get-Acl -LiteralPath "$outside\target.txt").Sddl
 $script:log = @(); Restore-Parked                                      # hardware restore
 Check 'E: restored shortcut has the Startup folder''s permissions again' (Everyone-Reads "$liveDir\zebar.exe.lnk")
