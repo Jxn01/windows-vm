@@ -1,25 +1,26 @@
-# windows-vm — run the real Windows half as a KVM VM on Garuda
+# windows-vm — run your real dual-boot Windows as a KVM VM from Linux
 
-Boot the **actual** Windows installation (`C:` = `nvme0n1p5`) as a virtual machine on Garuda, so anything that
-needs the Windows side — a Chrome extension, a setting, a scheduled task — can be done from here without
-rebooting. Built to be absolutely safe for both installations: the VM only ever sees Windows' own partitions
-through a read-only-by-default virtual disk, and never the real EFI partition, Garuda's root, the shared drives
-or the real partition table.
+[![Platform: Linux](https://img.shields.io/badge/host-Linux%20%C2%B7%20KVM%20%C2%B7%20libvirt-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://libvirt.org/)
+[![Guest: Windows](https://img.shields.io/badge/guest-the%20installed%20Windows%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 
-Plan, decisions and status: `~/.claude/kb/records/2026-10-08-windows-vm-plan.md`. This repo is private
-(`Jxn01/windows-vm`), lives in the shared tree, and follows its rules (no Linux venv inside the tree, personal
-git identity).
+Boot the **actual** Windows installation of a dual-boot machine — its own `C:` partition, not a copy — as a virtual
+machine while Linux is running, so anything that needs the Windows side (a setting, an extension, a scheduled task) can
+be done without rebooting. Written for the author's rig (Garuda Linux and Windows 11 on one NVMe drive), but every
+machine-specific value is recorded and checked, never assumed.
 
-## Status (2026-10-09)
+Built to be safe for **both** installations: the VM sees only Windows' own partitions, at their exact on-disk
+offsets, through a device-mapper disk that zero-fills everything else; it never sees the real EFI partition, the
+Linux root, other drives or the real partition table. A pre-flight refuses to start whenever Windows or its volume
+could be in an unsafe state, and a guard inside Windows switches off its hardware-driving autostarts (RGB, home
+automation agents, updates) on a VM boot and restores them on the next real boot.
 
-- **P0/P1 complete.** Facts recorded, rollback material saved, host tooling built, installed and tested
-  (110 unit tests + a root end-to-end test on a synthetic disk with the real geometry).
-- **P2 blocked by a physical-to-virtual boot issue.** The installed Windows reaches early kernel init and
-  bugchecks **`INACCESSIBLE_BOOT_DEVICE` (0x7B / `0xC0000034`)** when the kernel switches from UEFI firmware
-  I/O to its own storage stack to mount `C:`. Identical on emulated NVMe and SATA and in Safe Mode, and with
-  the hypervisor disabled. WinRE boots from the same virtual disk and reads `C:` fine. The fix is a
-  boot-start storage change in **C:'s SYSTEM hive** (the classic P2V remedy), applied first on the throwaway
-  overlay. See *Known issue* below.
+## Status
+
+**Working since 2026-10-09** — daily use: `winvm start`, `winvm ssh`, `winvm stop` (142 unit tests and a root
+end-to-end test on a synthetic disk with the real geometry). The one hard problem on the way is written up below
+(*The 0x7B boot, solved*): worth reading if you try the same thing.
 
 ## Safety model (how both installations stay intact)
 
@@ -154,7 +155,7 @@ tear down the disk · `bcd.py` patch the private BCD (hivex) · `probe.py` what 
 
 ## Tests
 
-`cd tests && python3 -m unittest discover` — 140 tests: GPT/layout/dm table, every pre-flight refusal, the XML
+`cd tests && python3 -m unittest discover` — 142 tests: GPT/layout/dm table, every pre-flight refusal, the XML
 audit, the ESP builder, NTFS parsing, BCD flags, the guest guard's static invariants (`test_guard_static.py`: no
 forced registry `New-Item`, no `Move-Item` or ACL write outside their primitives, the policy table, the late start) — each with a positive control. (`Test-SafeDir` refuses reparse-point Startup folders, closing the *static* junction vector; a timed junction swap during the pre-logon restore is a residual race that needs an enabled non-admin account to exploit — none on the rig/laptop — acknowledged and recorded in KB 11-windows.md T33, where the registry-only redesign that would remove the class is proposed.)
 The root end-to-end test on a synthetic disk with the real geometry: `sudo python3 -I tests/root_integration.py`.
@@ -166,13 +167,16 @@ trap):
 `powershell -NoProfile -ExecutionPolicy Bypass -File guest\test-guard-policies.ps1 [-Guard <guard.ps1>]` (exit 0 =
 all PASS). `-Guard` points it at another copy, e.g. the installed `C:\ProgramData\jxn-vm\guard.ps1`.
 
-## Known issue — the P2V boot blocker
+## The 0x7B boot, solved
 
-The installed Windows bugchecks `0x7B / 0xC0000034` in early kernel init. Diagnosis (see the plan record §7/§8):
-the kernel cannot attach `C:` through its own storage stack once it leaves UEFI firmware I/O, although WinRE
-and winload (which use firmware I/O) work from the same virtual disk. This is the classic physical-to-virtual
-storage-binding problem, and the leading cause is a boot-start disk filter / controller binding in **C:'s
-SYSTEM hive** (notably the `EhStorClass` lower-filter on the disk class, and the AHCI class not being mapped to
-`storahci` on this NVMe-only install). The fix is a SYSTEM-hive edit, applied and tested **on the throwaway
-overlay first** via `winvm-root inspect --rw`, and only then (for the persistent VM) on real C:. Both require
-read-write access to the Windows volume, which the host's auto-mode guard gates.
+The first boots bugchecked **`INACCESSIBLE_BOOT_DEVICE` (0x7B, P2 `0xC0000034`)** in early kernel init — although
+WinRE and winload booted fine from the same virtual disk. It looked like the classic physical-to-virtual storage
+problem (filter drivers, controller bindings in the SYSTEM hive), and three such fixes were tried. All were red herrings.
+
+**Root cause, found by dumping the crashed VM's RAM and reading `KiBugCheckData`:** P1 was the ARC name
+`\ArcName\multi(0)disk(0)rdisk(0)partition(5)`. `C:` is GPT partition 5. The first version of the layout *removed*
+the GPT entries of the two Linux partitions so the guest could not see them. winload builds the boot ARC name by
+counting GPT **slots** (`partition(5)`), but the kernel's partition manager numbers only the **present** partitions
+(1, 4, 5, 6 → 1, 2, 3, 4), so `partition(5)` did not exist. **Fix:** keep every GPT entry, so slot numbers match the
+real disk, and hide the Linux partitions' *contents* instead (the device-mapper `zero` target). One line in
+`layout.vm_images`; Windows booted to the login screen at once. A guard test keeps the entries from being blanked again.
